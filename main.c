@@ -46,7 +46,7 @@ int main(int argc, char **argv)
   sigaction(SIGINT, &act, NULL);
   sigaction(SIGTERM, &act, NULL);
   sigaction(SIGHUP, &act, NULL);
-/* TODO
+
   if (can_startup("can0") < 0) {
     goto fail1;
   }
@@ -54,7 +54,7 @@ int main(int argc, char **argv)
   if (mb_startup("/dev/ttyUSB0", 9600) < 0) {
     goto fail2;
   }
-*/
+
   if (timer_startup() < 0) {
     goto fail3;
   }
@@ -64,14 +64,12 @@ int main(int argc, char **argv)
   }
 
   while(!exit_flag) {
-    fd_set read_fd_set, write_fd_set;
+    fd_set read_fd_set;
     FD_ZERO(&read_fd_set);
-    FD_ZERO(&write_fd_set);
-    //TODO can_update_fds(&read_fd_set);
+    can_update_fds(&read_fd_set);
     timer_update_fds(&read_fd_set);
-    mqtt_update_fds(&read_fd_set, &write_fd_set);
 
-    err = select(FD_SETSIZE, &read_fd_set, &write_fd_set, NULL, NULL);
+    err = select(FD_SETSIZE, &read_fd_set, NULL, NULL, NULL);
     if (err < 0) {
       if (errno == EINTR) {
         continue;
@@ -82,11 +80,6 @@ int main(int argc, char **argv)
 
     // handle CAN data
     if (can_handler(&read_fd_set) < 0) {
-      goto fail5;
-    }
-
-    // handle mqtt data
-    if (mqtt_handler(&read_fd_set, &write_fd_set) < 0) {
       goto fail5;
     }
 
@@ -104,9 +97,9 @@ fail5:
 fail4:
   timer_shutdown();
 fail3:
-  //TODO mb_shutdown();
+  mb_shutdown();
 fail2:
-  //TODO can_shutdown();
+  can_shutdown();
 fail1:
   return ret;
 }

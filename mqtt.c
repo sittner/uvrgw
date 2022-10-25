@@ -6,10 +6,8 @@
 #include <mosquitto.h>
 
 #define KEEPALIVE_PERIOD 300
-#define RECONNECT_TIME 30
 
 static struct mosquitto *mosq = NULL;
-static int reconnect_timer = 0;
 
 static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   printf("connect callback, rc=%d\n", result);
@@ -50,13 +48,19 @@ int mqtt_startup(const char *host, int port, const char *client_id, const char *
   mosquitto_connect_callback_set(mosq, connect_callback);
   mosquitto_message_callback_set(mosq, message_callback);
 
-  if (mosquitto_connect(mosq, host, port, KEEPALIVE_PERIOD)) {
+  if (mosquitto_connect_async(mosq, host, port, KEEPALIVE_PERIOD)) {
     syslog(LOG_INFO, "initial mqtt connection failed");
   }
 
-  reconnect_timer = 0;
+  if (mosquitto_loop_start(mosq)) {
+    syslog(LOG_ERR, "Failed to start mosquitto thread");
+    goto fail3;
+  }
+
   return 0;
 
+fail3:
+  mosquitto_disconnect(mosq);
 fail2:
   mosquitto_destroy(mosq);
 fail1:
@@ -66,59 +70,9 @@ fail0:
 }
 
 void mqtt_shutdown(void) {
+  mosquitto_disconnect(mosq);
+  mosquitto_loop_stop(mosq, false);
   mosquitto_destroy(mosq);
   mosquitto_lib_cleanup();
-}
-
-void mqtt_update_fds(fd_set *read_fd_set, fd_set *write_fd_set) {
-  // check for valid socket
-  int sock = mosquitto_socket(mosq);
-  if (sock == -1 || fcntl(sock, F_GETFD) < 0) {
-    if (reconnect_timer == 0) {
-      reconnect_timer = RECONNECT_TIME;
-    }
-    return;
-  }
-
-  FD_SET(sock, read_fd_set);  
-  if (mosquitto_want_write(mosq)) {
-    FD_SET(sock, write_fd_set);  
-  }
-}
-
-int mqtt_handler(fd_set *read_fd_set, fd_set *write_fd_set) {
-  int sock = mosquitto_socket(mosq);
-
-  if (FD_ISSET(sock, read_fd_set)) {
-    if (mosquitto_loop_read(mosq, 1)) {
-      syslog(LOG_INFO, "mosquitto_loop_read failed");
-    }
-  }
-
-  if (FD_ISSET(sock, write_fd_set)) {
-    if (mosquitto_loop_write(mosq, 1)) {
-      syslog(LOG_INFO, "mosquitto_loop_write failed");
-    }
-  }
-
-  return 0;
-}
-
-int mqtt_task(void) {
-  if (reconnect_timer > 0) {
-    reconnect_timer--;
-printf("reconnect_timer %d\n", reconnect_timer);
-    if (reconnect_timer == 0) {
-      syslog(LOG_INFO, "try mqtt reconnect");
-      mosquitto_reconnect(mosq);
-    }
-    return 0;
-  }
-
-  if (mosquitto_loop_misc(mosq) != MOSQ_ERR_SUCCESS) {
-    syslog(LOG_INFO, "mosquitto_loop_misc failed");
-  }
-
-  return 0;
 }
 

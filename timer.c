@@ -1,6 +1,5 @@
 #include "timer.h"
 #include "mb.h"
-#include "mqtt.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -80,13 +79,8 @@ int timer_handler(fd_set *fd_set) {
     syslog(LOG_ERR, "failed to read timer event.");
     return -1;
   }
-/* TODO
-  if (mb_task() < 0) {
-    return -1;
-  }
-*/
 
-  if (mqtt_task() < 0) {
+  if (mb_task() < 0) {
     return -1;
   }
 
