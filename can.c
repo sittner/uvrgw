@@ -137,13 +137,6 @@ int can_handler(fd_set *fd_set) {
     }
   }
 
-/*
-printf("can = %03x [%d]", rcvd_frame.can_id & CAN_SFF_MASK, rcvd_frame.can_dlc);
-for (i = 0; i < rcvd_frame.can_dlc; i++) {
-  printf(" %02x", rcvd_frame.data[i]);
-}
-printf("\n");
-*/
   return 0;
 }
 
@@ -162,51 +155,4 @@ int can_send(const struct can_frame *frame) {
 
   return 0;
 }
-
-/*
-uint16_t u16_RCU_CAN_WriteMsg(const te_RCU_CAN_Node _ce_CanNodeNo, const uint16_t _cu16_MsgObjNo, const ts_RCU_CAN_Msg * const _ps_Msg) {
-  ts_RCU_CAN_NODE *node;
-  ts_RCU_CAN_Obj *obj;
-  struct can_frame send_frame;
-
-  // get node pointer
-  if (_ce_CanNodeNo >= e_RCU_CAN_NODE_COUNT) {
-    return e_RCU_CAN_ERR_REGFAULT;
-  }
-  node = &gs_RCU_CAN_SysData.nodes[_ce_CanNodeNo];
-
-  // check for valid fd
-  if (node->fd < 0) {
-    return e_RCU_CAN_ERR_CAN_OBJ_NOT_AVAILABLE;
-  }
-
-  // get object pointer
-  if (_cu16_MsgObjNo >= e_RCU_CAN_OBJ_MAX_COUNT_PER_NODE) {
-    return e_RCU_COM_ERR_PARAM;
-  }
-  obj = &node->objs[_cu16_MsgObjNo];
-
-  // check obj type
-  if (obj->config.e_MsgType != e_RCU_CAN_TX && obj->config.e_MsgType != e_RCU_CAN_RTR) {
-    return e_RCU_CAN_ERR_WRONG_RXTX_TYPE;
-  }
-
-  // convert to can_frame
-  memset(&send_frame, 0, sizeof(send_frame));
-  if (_ps_Msg->e_Xtd == e_RCU_CAN_EXTENDED_ID) {
-    send_frame.can_id = (_ps_Msg->u32_ID & CAN_EFF_MASK) | CAN_EFF_FLAG;
-  } else {
-    send_frame.can_id = _ps_Msg->u32_ID & CAN_SFF_MASK;
-  }
-  send_frame.can_dlc = _ps_Msg->u8_DLC;
-  memcpy(send_frame.data, &_ps_Msg->u_Data, 8);
-
-  // send packet
-  if (write(node->fd, &send_frame, sizeof(send_frame)) < 0) {
-    return e_RCU_CAN_ERR_TRANSACT;
-  }
-
-  return e_NO_ERROR;
-}
-*/
 
