@@ -51,7 +51,7 @@ int main(int argc, char **argv)
     goto fail1;
   }
 
-  if (mb_startup("/dev/ttyUSB0", 9600) < 0) {
+  if (mb_startup("/dev/ttyAMA0", 9600) < 0) {
     goto fail2;
   }
 
@@ -59,7 +59,7 @@ int main(int argc, char **argv)
     goto fail3;
   }
 
-  if (mqtt_startup("localhost", 1883, "client123", "uvr", "K4HXOT1yKNekMV6d") < 0) {
+  if (mqtt_startup("10.0.0.2", 1883, "client123", "uvr", "K4HXOT1yKNekMV6d") < 0) {
     goto fail4;
   }
 
