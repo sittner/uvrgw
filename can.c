@@ -1,4 +1,5 @@
 #include "can.h"
+#include "mqtt.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,6 +20,40 @@
 #include <errno.h>
 
 static int can_fd = -1;
+
+typedef struct {
+  double offset;
+  double scale;
+  const char *mqtt_topic;
+  const char *mqtt_fmt;
+} CAN_ANALOG_OUT_T;
+
+typedef struct {
+  int can_id;
+  CAN_ANALOG_OUT_T vals[4];
+} CAN_ANALOG_GRP_T;
+
+static const CAN_ANALOG_GRP_T analog_outs[] = {
+  { 0x201, {
+    { 0.0, 0.1, "uvr/temp/store/upper", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/store/lower", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/radi/send", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/radi/return", "%.1f" },
+  }},
+  { 0x281, {
+    { 0.0, 0.1, "uvr/temp/outdoor", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/garret", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/warm_water", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/circ_ret", "%.1f" },
+  }},
+  { 0x301, {
+    { 0.0, 0.1, "uvr/power/radi", "%.2f" },
+    { 0.0, 0.1, "uvr/energ/radi", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/radi/sp", "%.1f" },
+    { 0.0, 0.0, NULL, NULL },
+  }},
+  { 0 }
+};
 
 int can_startup(const char *ifname) {
   // open socket
@@ -64,6 +99,11 @@ void can_shutdown(void) {
 int can_handler(fd_set *fd_set) {
   struct can_frame rcvd_frame;
   ssize_t count;
+  int i;
+  uint8_t *p;
+  const CAN_ANALOG_GRP_T *agrp;
+  const CAN_ANALOG_OUT_T *aout;
+  int16_t tmp;
 
   // check if fd is set
   if (!FD_ISSET(can_fd, fd_set)) {
@@ -77,15 +117,50 @@ int can_handler(fd_set *fd_set) {
     return -1;
   }
 
-  // get flags
-//  isEff = (rcvd_frame.can_id & CAN_EFF_FLAG);
-//  isRtr = (rcvd_frame.can_id & CAN_RTR_FLAG);
-//  isErr = (rcvd_frame.can_id & CAN_ERR_FLAG);
+  // process only std frames
+  if ((rcvd_frame.can_id & (CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_ERR_FLAG)) != 0) {
+    return 0;
+  }
+
+  for (agrp = analog_outs; agrp->can_id != 0; agrp++) {
+    if ((rcvd_frame.can_id & CAN_SFF_MASK) != agrp->can_id) {
+      continue;
+    }
+    p = rcvd_frame.data;
+    for (aout = agrp->vals, i = 0; i < 4; aout++, i++) {
+      tmp = *(p++);
+      tmp |= ((int16_t) *(p++)) << 8;
+
+      if (aout->mqtt_topic != NULL) {
+        mqtt_publish_scaled16(aout->mqtt_topic, aout->mqtt_fmt, tmp, aout->offset, aout->scale);
+      }
+    }
+  }
+
+/*
+printf("can = %03x [%d]", rcvd_frame.can_id & CAN_SFF_MASK, rcvd_frame.can_dlc);
+for (i = 0; i < rcvd_frame.can_dlc; i++) {
+  printf(" %02x", rcvd_frame.data[i]);
+}
+printf("\n");
+*/
   return 0;
 }
 
 void can_update_fds(fd_set *fd_set) {
   FD_SET(can_fd, fd_set);
+}
+
+int can_send(const struct can_frame *frame) {
+  ssize_t count;
+
+  count = write(can_fd, frame, sizeof(struct can_frame));
+  if (count != sizeof(struct can_frame)) {
+    syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+    return -1;
+  }
+
+  return 0;
 }
 
 /*
