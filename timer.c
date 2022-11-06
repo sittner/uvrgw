@@ -47,9 +47,9 @@ fail0:
 }
 
 int timer_startup(void) {
-  timer_fd = create_timer(1000);
+  timer_fd = create_timer(TIMER_PERIOD_MS);
   if (timer_fd < 0) {
-    syslog(LOG_ERR, "unable to create 1s timer.");
+    syslog(LOG_ERR, "unable to create periodic timer.");
     goto fail0;
   }
 
