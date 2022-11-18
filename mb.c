@@ -46,11 +46,11 @@ static struct can_frame canbuf_hp_energy = { .can_id = 0x202, .can_dlc = 8, .dat
 static const MB_REG_T input_regs[] = {
   // FOGO gen set
   { 10, 1000, true, 0.0, 1.0, "uvr/fogo/rpm", "%.0f" },
-  { 10, 1016, true, 0.0, 1.0, "uvr/fogo/load_p", "%.0f" },
-  { 10, 1020, true, 0.0, 1.0, "uvr/fogo/load_q", "%.0f" },
-  { 10, 1024, true, 0.0, 1.0, "uvr/fogo/load_s", "%.0f" },
-  { 10, 1028, true, 0.0, 1.0, "uvr/fogo/pwrfact", "%.0f" },
-  { 10, 1032, true, 0.0, 1.0, "uvr/fogo/freq", "%.0f" },
+  { 10, 1016, true, 0.0, 0.1, "uvr/fogo/load_p", "%.1f" },
+  { 10, 1020, true, 0.0, 0.1, "uvr/fogo/load_q", "%.1f" },
+  { 10, 1024, true, 0.0, 0.1, "uvr/fogo/load_s", "%.1f" },
+  { 10, 1028, true, 0.0, 0.01, "uvr/fogo/pwrfact", "%.2f" },
+  { 10, 1032, true, 0.0, 0.1, "uvr/fogo/freq", "%.1f" },
 
   { 10, 1033, true, 0.0, 1.0, "uvr/fogo/volt_l1-n", "%.0f" },
   { 10, 1034, true, 0.0, 1.0, "uvr/fogo/volt_l2-n", "%.0f" },
