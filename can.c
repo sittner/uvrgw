@@ -52,6 +52,12 @@ static const CAN_ANALOG_GRP_T analog_outs[] = {
     { 0.0, 0.1, "uvr/temp/radi/sp", "%.1f" },
     { 0.0, 0.0, NULL, NULL },
   }},
+  { 0x381, {
+    { 0.0, 0.1, "uvr/power/hp", "%.2f" },
+    { 0.0, 0.1, "uvr/energ/hp", "%.1f" },
+    { 0.0, 0.1, "uvr/temp/hp/sp", "%.1f" },
+    { 0.0, 0.0, NULL, NULL },
+  }},
   { 0 }
 };
 
