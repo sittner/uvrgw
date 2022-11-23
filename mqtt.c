@@ -18,7 +18,7 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   mosquitto_publish(mosq, NULL, "uvr/status", CONST_STR_PAYLOAD("ON"), 1, true);
 
   // TODO
-  mosquitto_subscribe(mosq, NULL, "uvr/#", 0);
+  //mosquitto_subscribe(mosq, NULL, "uvr/#", 0);
 }
 
 static void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message) {
