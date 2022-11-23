@@ -19,7 +19,8 @@
 
 #define MAX_REQ_REGS 32
 
-#define FMT_BITMASK "bitmask"
+#define FMT_BITMASK  "bitmask"
+#define FMT_BITNAMES "bitnames"
 
 typedef struct {
   struct can_frame *frame;
@@ -70,9 +71,29 @@ static const MB_REG_T input_regs[] = {
   { 10, 1055, true, 0.0, 1.0, "uvr/fogo/level_fuel", "%.0f" },
   { 10, 1056, true, 0.0, 1.0, "uvr/fogo/temp_exhaust", "%.0f" },
 
-  { 10, 1057, true, 0.0, 8.0, "uvr/fogo/dio/i-%02d", FMT_BITMASK },
+  { 10, 1057, true, 0.0, 8.0, "uvr/fogo/dio/in_%s", FMT_BITNAMES "\0"
+    "remote_start\0"
+    "emerg_stop\0"
+    "mcb_on\0"
+    "gcb_on\0"
+    "\0"
+    "coolant_overtemp\0"
+    "oil_press_fault\0"
+    "charger_ok\0"
+    MQTT_BITNAMES_EOL },
+
   { 10, 1058, true, 0.0, 1.0, "uvr/fogo/emerg_stop", "%.0f" },
-  { 10, 1059, true, 0.0, 8.0, "uvr/fogo/dio/o-%02d", FMT_BITMASK },
+
+  { 10, 1059, true, 0.0, 8.0, "uvr/fogo/dio/out_%s", FMT_BITNAMES "\0"
+    "fuel_solenoid\0"
+    "starter\0"
+    "preheat\0"
+    "horn\0"
+    "gcb_off_coil\0"
+    "coolant_pump\0"
+    "canopy_fan\0"
+    "gcb_close\0"
+    MQTT_BITNAMES_EOL },
 
   { 10, 4214, true, 0.0, 1.0, "uvr/fogo/cnt_alarms", "%.0f" },
 
@@ -97,7 +118,6 @@ static const MB_REG_T input_regs[] = {
 static modbus_t *ctx = NULL;
 static const MB_REG_T *reg_pos = NULL;
 
-static void process_bitmask(const MB_REG_T *reg, uint16_t val);
 static void process_scaled16(const MB_REG_T *reg, uint16_t val);
 
 int mb_startup(const char *dev, int baud) {
@@ -194,17 +214,15 @@ int mb_task(void) {
   // process values
   for (p = buf; reg_pos != curr; reg_pos++, p++) {
     if (strcmp(FMT_BITMASK, reg_pos->mqtt_fmt) == 0) {
-      process_bitmask(reg_pos, *p);
+      mqtt_publish_bitmask(reg_pos->mqtt_topic, (uint32_t) *p, (int) reg_pos->offset, (int) reg_pos->scale);
+    } else if (strcmp(FMT_BITNAMES, reg_pos->mqtt_fmt) == 0) {
+      mqtt_publish_bitnames(reg_pos->mqtt_topic, (uint32_t) *p, (int) reg_pos->offset, &reg_pos->mqtt_fmt[sizeof(FMT_BITNAMES)]);
     } else {
       process_scaled16(reg_pos, *p);
     }
   }
 
   return 0;
-}
-
-static void process_bitmask(const MB_REG_T *reg, uint16_t val) {
-  mqtt_publish_bitmask(reg->mqtt_topic, (uint32_t) val, (int) reg->offset, (int) reg->scale);
 }
 
 static void process_scaled16(const MB_REG_T *reg, uint16_t val) {
@@ -223,3 +241,4 @@ static void process_scaled16(const MB_REG_T *reg, uint16_t val) {
     }
   }
 }
+

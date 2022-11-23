@@ -131,3 +131,32 @@ int mqtt_publish_bitmask(const char *topic_fmt, uint32_t val, int bitstart, int 
 
   return MOSQ_ERR_SUCCESS;
 }
+
+int mqtt_publish_bitnames(const char *topic_fmt, uint32_t val, int bitstart, const char *names) {
+  const char *p;
+  char topic[64];
+  int ret;
+  char buf;
+
+  val >>= bitstart;
+  for (p = names; strcmp(p, MQTT_BITNAMES_EOL) != 0; p += strlen(p) + 1, val >>= 1) {
+    // skip epmty lines
+    if (*p == 0) {
+      continue;
+    }
+
+    ret = snprintf(topic, sizeof(topic), topic_fmt, p);
+    if (ret >= sizeof(topic)) {
+      return MOSQ_ERR_NOMEM;
+    }
+
+    buf = (val & 1) ? '1' : '0';
+    ret = mosquitto_publish(mosq, NULL, topic, sizeof(buf), &buf, 1, true);
+    if (ret != MOSQ_ERR_SUCCESS) {
+      return ret;
+    }
+  }
+
+  return MOSQ_ERR_SUCCESS;
+}
+
