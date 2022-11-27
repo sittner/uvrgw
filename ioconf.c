@@ -26,8 +26,8 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .can = { .can_id = 0x301, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
   { .topic = "uvr/temp/radi/sp", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .can = { .can_id = 0x301, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
-  { .topic = "uvr/flow/radi", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
-    .can = { .can_id = 0x301, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = true } },
+  { .topic = "uvr/flow/radi", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
+    .can = { .can_id = 0x301, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = (1.0 / 60.0), .input = true } },
   { .topic = "uvr/power/hp", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .can = { .can_id = 0x381, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
   { .topic = "uvr/energ/hp", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
@@ -144,7 +144,7 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .mb = { .slave = 11, .addr = 45, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true } },
   { .topic = "uvr/daikin/flow", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
     .mb = { .slave = 11, .addr = 49, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
-    .can = { .can_id = 0x202, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.6, .input = false, .send = true } },
+    .can = { .can_id = 0x202, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = (1.0 / 60.0), .input = false, .send = true } },
 
   // PDOs from OpenHAB
   { .topic = "uvr/pv_surplus", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f", .subscribe = true,
