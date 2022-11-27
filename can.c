@@ -1,5 +1,6 @@
 #include "can.h"
 #include "mqtt.h"
+#include "mb.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -21,47 +22,47 @@
 
 static int can_fd = -1;
 
-typedef struct {
-  double offset;
-  double scale;
-  const char *mqtt_topic;
-  const char *mqtt_fmt;
-} CAN_ANALOG_OUT_T;
+#define OUTPUT_BUF_COUNT 32
 
-typedef struct {
-  int can_id;
-  CAN_ANALOG_OUT_T vals[4];
-} CAN_ANALOG_GRP_T;
+static struct can_frame output_buf[OUTPUT_BUF_COUNT];
 
-static const CAN_ANALOG_GRP_T analog_outs[] = {
-  { 0x201, {
-    { 0.0, 0.1, "uvr/temp/store/upper", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/store/lower", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/radi/send", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/radi/return", "%.1f" },
-  }},
-  { 0x281, {
-    { 0.0, 0.1, "uvr/temp/outdoor", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/garret", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/warm_water", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/circ_ret", "%.1f" },
-  }},
-  { 0x301, {
-    { 0.0, 0.1, "uvr/power/radi", "%.2f" },
-    { 0.0, 0.1, "uvr/energ/radi", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/radi/sp", "%.1f" },
-    { 0.0, 1.0, "uvr/flow/radi", "%.0f" },
-  }},
-  { 0x381, {
-    { 0.0, 0.1, "uvr/power/hp", "%.2f" },
-    { 0.0, 0.1, "uvr/energ/hp", "%.1f" },
-    { 0.0, 0.1, "uvr/temp/hp/sp", "%.1f" },
-    { 0.0, 0.0, NULL, NULL },
-  }},
-  { 0 }
-};
+static uint32_t read_value(const uint8_t *p, int len);
+static void write_value(uint8_t *p, int len, uint32_t val);
+static double val_limit(double val, double min, double max);
 
 int can_startup(const char *ifname) {
+  const IOCONF_CHAN_T *chan;
+  struct can_frame *frame, *found;
+  int i;
+
+  // setup output buffers
+  memset(output_buf, 0, sizeof(output_buf));
+  for (chan = ioconf_tab; chan->topic != NULL ; chan++) {
+    // check for CAN output mapping
+    if (chan->can.can_id == 0 || chan->can.input) {
+      continue;
+    }
+
+    // search for frame
+    for (frame = output_buf, found = NULL, i = 0; frame->can_id != 0; frame++, i++) {
+      if (i >= OUTPUT_BUF_COUNT) {
+        syslog(LOG_ERR, "Maximum CAN output buffer count exceeded.");
+        goto fail0;
+      }
+
+      if (frame->can_id == chan->can.can_id) {
+        found = frame;
+        break;
+      }
+    }
+
+    // initialize frame, if not found
+    if (found == NULL) {
+      frame->can_id = chan->can.can_id;
+      frame->can_dlc = 8;
+    }
+  }
+
   // open socket
   if ((can_fd = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
     syslog(LOG_ERR, "Could not create CAN socket");
@@ -105,11 +106,9 @@ void can_shutdown(void) {
 int can_handler(fd_set *fd_set) {
   struct can_frame rcvd_frame;
   ssize_t count;
-  int i;
   uint8_t *p;
-  const CAN_ANALOG_GRP_T *agrp;
-  const CAN_ANALOG_OUT_T *aout;
-  int16_t tmp;
+  const IOCONF_CHAN_T *chan;
+  double val;
 
   // check if fd is set
   if (!FD_ISSET(can_fd, fd_set)) {
@@ -128,35 +127,158 @@ int can_handler(fd_set *fd_set) {
     return 0;
   }
 
-  for (agrp = analog_outs; agrp->can_id != 0; agrp++) {
-    if ((rcvd_frame.can_id & CAN_SFF_MASK) != agrp->can_id) {
+  for (chan = ioconf_tab; chan->topic != NULL ; chan++) {
+    // check for CAN input mapping
+    if (chan->can.can_id == 0 || !chan->can.input) {
       continue;
     }
-    p = rcvd_frame.data;
-    for (aout = agrp->vals, i = 0; i < 4; aout++, i++) {
-      tmp = *(p++);
-      tmp |= ((int16_t) *(p++)) << 8;
 
-      if (aout->mqtt_topic != NULL) {
-        mqtt_publish_scaled16(aout->mqtt_topic, aout->mqtt_fmt, tmp, aout->offset, aout->scale);
-      }
+    // check for matching CAN-ID
+    if ((rcvd_frame.can_id & CAN_SFF_MASK) != chan->can.can_id) {
+      continue;
     }
+
+    // read value
+    if (chan->can.type == IOCONF_CAN_TYPE_BIT) {
+      p = &rcvd_frame.data[(chan->can.pos >> 3)];
+      val = (*p & (1 << (chan->can.pos & 7))) ? 1.0 : 0.0;
+    } else {
+      p = &rcvd_frame.data[chan->can.pos];
+      switch (chan->can.type) {
+        case IOCONF_CAN_TYPE_U8:
+          val = (double) read_value(p, 1);
+          break;
+        case IOCONF_CAN_TYPE_S8:
+          val = (double) ((int8_t) read_value(p, 1));
+          break;
+        case IOCONF_CAN_TYPE_U16:
+          val = (double) read_value(p, 2);
+          break;
+        case IOCONF_CAN_TYPE_S16:
+          val = (double) ((int16_t) read_value(p, 2));
+          break;
+        case IOCONF_CAN_TYPE_U32:
+          val = (double) read_value(p, 4);
+          break;
+        case IOCONF_CAN_TYPE_S32:
+          val = (double) ((int32_t) read_value(p, 4));
+          break;
+        default:
+          val = 0.0;
+      }
+      val = val * chan->can.scale + chan->can.offset;
+    }
+
+    // write modbus
+    mb_write_chan(chan, val);
+
+    // send MQTT topic
+    mqtt_publish_chan(chan, val);
   }
 
   return 0;
+}
+
+static uint32_t read_value(const uint8_t *p, int len) {
+  int i;
+  uint32_t val;
+
+  for (i = 1, val = 0; i <= len; i++) {
+    val <<= 8;
+    val |= p[len - i];
+  }
+
+  return val;
+}
+
+static void write_value(uint8_t *p, int len, uint32_t val) {
+  int i;
+
+  for (i = 0; i < len; i++) {
+    p[i] = val & 0xff;
+    val >>= 8;
+  }
+}
+
+static double val_limit(double val, double min, double max) {
+  if (val < min) {
+    return min;
+  }
+
+  if (val > max) {
+    return max;
+  }
+
+  return val;
 }
 
 void can_update_fds(fd_set *fd_set) {
   FD_SET(can_fd, fd_set);
 }
 
-int can_send(const struct can_frame *frame) {
+int can_send_chan(const IOCONF_CHAN_T *chan, double val) {
+  struct can_frame *frame, *found;
+  int i;
+  uint8_t *p;
   ssize_t count;
 
-  count = write(can_fd, frame, sizeof(struct can_frame));
-  if (count != sizeof(struct can_frame)) {
-    syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
-    return -1;
+  // check for CAN output mapping
+  if (chan->can.can_id == 0 || chan->can.input) {
+    return 0;
+  }
+
+  // search for matching frame buffer
+  for (frame = output_buf, found = NULL, i = 0; frame->can_id != 0 && i < OUTPUT_BUF_COUNT; frame++, i++) {
+    if (frame->can_id == chan->can.can_id) {
+      found = frame;
+      break;
+    }
+  }
+
+  // exit, if not found
+  if (found == NULL) {
+    return 0;
+  }
+
+  // write value
+  if (chan->can.type == IOCONF_CAN_TYPE_BIT) {
+    p = &found->data[(chan->can.pos >> 3)];
+    if (val > 0.5) {
+      *p |= 1 << (chan->can.pos & 7);
+    } else {
+      *p &= ~(1 << (chan->can.pos & 7));
+    }
+  } else {
+    val = (val - chan->can.offset) / chan->can.scale;
+    p = &found->data[chan->can.pos];
+    switch (chan->can.type) {
+      case IOCONF_CAN_TYPE_U8:
+        write_value(p, 1, (uint8_t) val_limit(val, 0.0, UINT8_MAX));
+        break;
+      case IOCONF_CAN_TYPE_S8:
+        write_value(p, 1, (int8_t) val_limit(val, INT8_MIN, INT8_MAX));
+        break;
+      case IOCONF_CAN_TYPE_U16:
+        write_value(p, 2, (uint16_t) val_limit(val, 0.0, UINT16_MAX));
+        break;
+      case IOCONF_CAN_TYPE_S16:
+        write_value(p, 2, (int16_t) val_limit(val, INT16_MIN, INT16_MAX));
+        break;
+      case IOCONF_CAN_TYPE_U32:
+        write_value(p, 4, (uint32_t) val_limit(val, 0.0, UINT32_MAX));
+        break;
+      case IOCONF_CAN_TYPE_S32:
+        write_value(p, 4, (int32_t) val_limit(val, INT32_MIN, INT32_MAX));
+        break;
+    }
+  }
+
+  if (chan->can.send) {
+    count = write(can_fd, frame, sizeof(struct can_frame));
+    if (count != sizeof(struct can_frame)) {
+      syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+      return -1;
+    }
   }
 
   return 0;

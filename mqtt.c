@@ -1,6 +1,9 @@
 #include "mqtt.h"
+#include "can.h"
+#include "mb.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 #include <fcntl.h>
@@ -13,24 +16,64 @@
 static struct mosquitto *mosq = NULL;
 
 static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
-  //printf("connect callback, rc=%d\n", result);
+  const IOCONF_CHAN_T *chan;
 
   mosquitto_publish(mosq, NULL, "uvr/status", CONST_STR_PAYLOAD("ON"), 1, true);
 
-  // TODO
-  //mosquitto_subscribe(mosq, NULL, "uvr/#", 0);
+  for (chan = ioconf_tab; chan->topic != NULL; chan++) {
+    if (chan->subscribe) {
+      mosquitto_subscribe(mosq, NULL, chan->topic, 0);
+    }
+  }
 }
 
-static void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message) {
-/*
-  bool match = 0;
-  printf("got message '%.*s' for topic '%s'\n", message->payloadlen, (char*) message->payload, message->topic);
+static void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
+  const IOCONF_CHAN_T *chan;
+  char buf[32];
+  double val;
 
-  mosquitto_topic_matches_sub("uvr/#", message->topic, &match);
-  if (match) {
-    printf("got message for ADC topic\n");
+  // search for topic
+  for (chan = ioconf_tab; ; chan++) {
+    if (chan->topic == NULL) {
+      return;
+    }
+    if (chan->subscribe && strcmp(chan->topic, msg->topic) == 0) {
+      break;
+    }
   }
-*/
+
+  // check vor maximum payload length
+  if (msg->payloadlen >= (sizeof(buf) - 1)) {
+    return;
+  }
+
+  // get payload as string
+  memcpy(buf, msg->payload, msg->payloadlen);
+  buf[msg->payloadlen] = 0;
+
+
+  val = 0.0;
+  switch (chan->type) {
+    case IOCONF_CHAN_TYPE_SWITCH:
+      if (strcmp("ON", buf) == 0) {
+        val = 1.0;
+      }
+      break;
+    case IOCONF_CHAN_TYPE_CONTACT:
+      if (strcmp("CLOSED", buf) == 0) {
+        val = 1.0;
+      }
+      break;
+    case IOCONF_CHAN_TYPE_NUMBER:
+      val = strtod(buf, NULL);
+      break;
+  }
+
+  // send CAN message
+  can_send_chan(chan, val);
+
+  // write MODBUS
+  mb_write_chan(chan, val);
 }
 
 int mqtt_startup(const char *host, int port, const char *client_id, const char *username, const char *password) {
@@ -89,74 +132,34 @@ void mqtt_shutdown(void) {
   mosquitto_lib_cleanup();
 }
 
-int mqtt_publish(const char *topic, const char *payload) {
-  return mosquitto_publish(mosq, NULL, topic, strlen(payload), payload, 1, true);
-}
-
-int mqtt_publish_float(const char *topic, const char *fmt, double val) {
-  char buf[16];
+int mqtt_publish_chan(const IOCONF_CHAN_T *chan, double val) {
+  char buf[32];
   int len;
 
-  len = snprintf(buf, sizeof(buf), fmt, val);
-  if (len > sizeof(buf)) {
-    return MOSQ_ERR_PAYLOAD_SIZE;
+  switch (chan->type) {
+    case IOCONF_CHAN_TYPE_SWITCH:
+      if (val >= 0.5) {
+        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("ON"), 1, true);
+      } else {
+        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("OFF"), 1, true);
+      }
+
+    case IOCONF_CHAN_TYPE_CONTACT:
+      if (val >= 0.5) {
+        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("CLOSED"), 1, true);
+      } else {
+        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("OPEN"), 1, true);
+      }
+
+    case IOCONF_CHAN_TYPE_NUMBER:
+      len = snprintf(buf, sizeof(buf), chan->fmt, val);
+      if (len > sizeof(buf)) {
+        return MOSQ_ERR_PAYLOAD_SIZE;
+      }
+
+      return mosquitto_publish(mosq, NULL, chan->topic, len, buf, 1, true);
   }
 
-  return mosquitto_publish(mosq, NULL, topic, len, buf, 1, true);
-}
-
-int mqtt_publish_scaled16(const char *topic, const char *fmt, int16_t val, double offset, double scale) {
-  return mqtt_publish_float(topic, fmt, ((double) val) * scale + offset);
-}
-
-int mqtt_publish_bitmask(const char *topic_fmt, uint32_t val, int bitstart, int bitcnt) {
-  int i;
-  char topic[64];
-  int ret;
-  char buf;
-
-  val >>= bitstart;
-  for (i = 0; i < bitcnt; i++, val >>= 1) {
-    ret = snprintf(topic, sizeof(topic), topic_fmt, i);
-    if (ret >= sizeof(topic)) {
-      return MOSQ_ERR_NOMEM;
-    }
-
-    buf = (val & 1) ? '1' : '0';
-    ret = mosquitto_publish(mosq, NULL, topic, sizeof(buf), &buf, 1, true);
-    if (ret != MOSQ_ERR_SUCCESS) {
-      return ret;
-    }
-  }
-
-  return MOSQ_ERR_SUCCESS;
-}
-
-int mqtt_publish_bitnames(const char *topic_fmt, uint32_t val, int bitstart, const char *names) {
-  const char *p;
-  char topic[64];
-  int ret;
-  char buf;
-
-  val >>= bitstart;
-  for (p = names; strcmp(p, MQTT_BITNAMES_EOL) != 0; p += strlen(p) + 1, val >>= 1) {
-    // skip epmty lines
-    if (*p == 0) {
-      continue;
-    }
-
-    ret = snprintf(topic, sizeof(topic), topic_fmt, p);
-    if (ret >= sizeof(topic)) {
-      return MOSQ_ERR_NOMEM;
-    }
-
-    buf = (val & 1) ? '1' : '0';
-    ret = mosquitto_publish(mosq, NULL, topic, sizeof(buf), &buf, 1, true);
-    if (ret != MOSQ_ERR_SUCCESS) {
-      return ret;
-    }
-  }
-
-  return MOSQ_ERR_SUCCESS;
+  return MOSQ_ERR_UNKNOWN;
 }
 

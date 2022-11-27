@@ -4,6 +4,7 @@ TARGET = uvrgw
 
 SRC = \
 	main.c \
+	ioconf.c \
 	can.c \
 	timer.c \
 	mb.c \

@@ -15,114 +15,20 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 
-#define RESPONSE_TIMEOUT_MS 2000
+#define RESPONSE_TIMEOUT_MS 200
 
 #define MAX_REQ_REGS 32
 
-#define FMT_BITMASK  "bitmask"
-#define FMT_BITNAMES "bitnames"
-
-typedef struct {
-  struct can_frame *frame;
-  int mul;
-  int div;
-  int offset;
-  int pos;
-  bool send;
-} MB_CAN_T;
-
-typedef struct {
-  int slave;
-  int addr;
-  bool input_reg;
-  double offset;
-  double scale;
-  const char *mqtt_topic;
-  const char *mqtt_fmt;
-  MB_CAN_T can;
-} MB_REG_T;
-
-static struct can_frame canbuf_hp_energy = { .can_id = 0x202, .can_dlc = 8, .data = { 0 } };
-
-static const MB_REG_T input_regs[] = {
-  // FOGO gen set
-  { 10, 1000, true, 0.0, 1.0, "uvr/fogo/rpm", "%.0f" },
-  { 10, 1016, true, 0.0, 0.1, "uvr/fogo/load_p", "%.1f" },
-  { 10, 1020, true, 0.0, 0.1, "uvr/fogo/load_q", "%.1f" },
-  { 10, 1024, true, 0.0, 0.1, "uvr/fogo/load_s", "%.1f" },
-  { 10, 1028, true, 0.0, 0.01, "uvr/fogo/pwrfact", "%.2f" },
-  { 10, 1032, true, 0.0, 0.1, "uvr/fogo/freq", "%.1f" },
-
-  { 10, 1033, true, 0.0, 1.0, "uvr/fogo/volt_l1-n", "%.0f" },
-  { 10, 1034, true, 0.0, 1.0, "uvr/fogo/volt_l2-n", "%.0f" },
-  { 10, 1035, true, 0.0, 1.0, "uvr/fogo/volt_l3-n", "%.0f" },
-  { 10, 1036, true, 0.0, 1.0, "uvr/fogo/volt_l1-l1", "%.0f" },
-  { 10, 1037, true, 0.0, 1.0, "uvr/fogo/volt_l2-l2", "%.0f" },
-  { 10, 1038, true, 0.0, 1.0, "uvr/fogo/volt_l3-l1", "%.0f" },
-  { 10, 1039, true, 0.0, 1.0, "uvr/fogo/curr_l1", "%.0f" },
-  { 10, 1040, true, 0.0, 1.0, "uvr/fogo/curr_l2", "%.0f" },
-  { 10, 1041, true, 0.0, 1.0, "uvr/fogo/curr_l3", "%.0f" },
-
-  { 10, 1051, true, 0.0, 0.1, "uvr/fogo/volt_bat", "%.1f" },
-  { 10, 1052, true, 0.0, 0.1, "uvr/fogo/volt_alt", "%.1f" },
-
-  { 10, 1053, true, 0.0, 1.0, "uvr/fogo/temp_coolant", "%.0f" },
-  { 10, 1054, true, 0.0, 1.0, "uvr/fogo/temp_canopy", "%.0f" },
-  { 10, 1055, true, 0.0, 1.0, "uvr/fogo/level_fuel", "%.0f" },
-  { 10, 1056, true, 0.0, 1.0, "uvr/fogo/temp_exhaust", "%.0f" },
-
-  { 10, 1057, true, 0.0, 8.0, "uvr/fogo/dio/in_%s", FMT_BITNAMES "\0"
-    "remote_start\0"
-    "emerg_stop\0"
-    "mcb_on\0"
-    "gcb_on\0"
-    "\0"
-    "coolant_overtemp\0"
-    "oil_press_fault\0"
-    "charger_ok\0"
-    MQTT_BITNAMES_EOL },
-
-  { 10, 1058, true, 0.0, 1.0, "uvr/fogo/emerg_stop", "%.0f" },
-
-  { 10, 1059, true, 0.0, 8.0, "uvr/fogo/dio/out_%s", FMT_BITNAMES "\0"
-    "fuel_solenoid\0"
-    "starter\0"
-    "preheat\0"
-    "horn\0"
-    "gcb_off_coil\0"
-    "coolant_pump\0"
-    "canopy_fan\0"
-    "gcb_close\0"
-    MQTT_BITNAMES_EOL },
-
-  { 10, 4214, true, 0.0, 1.0, "uvr/fogo/cnt_alarms", "%.0f" },
-
-  // TODO: start: modbus_write_bit(ctx, 4700, TRUE);
-  // TODO: stop: modbus_write_bit(ctx, 4700, FALSE);
-
-  // DAIKIN heat pump
-  { 11, 40, true, 0.0, 0.01, "uvr/daikin/temp_heat_exchanger", "%.2f",
-    .can = { &canbuf_hp_energy, 1, 10, 0, 0, false } },
-  { 11, 41, true, 0.0, 0.01, "uvr/daikin/temp_backup_heater", "%.2f" },
-  { 11, 42, true, 0.0, 0.01, "uvr/daikin/temp_return", "%.2f",
-    .can = { &canbuf_hp_energy, 1, 10, 0, 1, false } },
-  { 11, 43, true, 0.0, 0.01, "uvr/daikin/temp_warm_water", "%.2f" },
-  { 11, 44, true, 0.0, 0.01, "uvr/daikin/temp_outdoor", "%.2f" },
-  { 11, 45, true, 0.0, 0.01, "uvr/daikin/temp_refrigerant", "%.2f" },
-  { 11, 49, true, 0.0, 0.01, "uvr/daikin/flow", "%.2f",
-    .can = { &canbuf_hp_energy, 60, 100, 0, 2, true } },
-
-  { 0 }
-};
-
 static modbus_t *ctx = NULL;
-static const MB_REG_T *reg_pos = NULL;
+static const IOCONF_CHAN_T *chan = NULL;
 
-static void process_scaled16(const MB_REG_T *reg, uint16_t val);
+static int read_bits(int count, const IOCONF_CHAN_T *end);
+static int read_registers(int count, const IOCONF_CHAN_T *end);
+static double val_limit(double val, double min, double max);
 
 int mb_startup(const char *dev, int baud) {
 
-  reg_pos = input_regs;
+  chan = ioconf_tab;
 
   ctx = modbus_new_rtu(dev, baud, 'N', 8, 1);
   if (ctx == NULL) {
@@ -168,77 +74,233 @@ void mb_shutdown(void) {
 }
 
 int mb_task(void) {
-  uint16_t buf[MAX_REQ_REGS];
   int count;
-  const MB_REG_T *curr, *prev;
+  const IOCONF_CHAN_T *first, *curr, *prev;
   int ret;
-  uint16_t *p;
 
   // check for wrap around
-  if (reg_pos->slave == 0) {
-    reg_pos = input_regs;
+  if (chan->topic == NULL) {
+    chan = ioconf_tab;
   }
 
-  // check for continuous address range
-  for (count = 0, prev = NULL, curr = reg_pos; count < MAX_REQ_REGS && curr->slave != 0; count++, prev = curr, curr++) {
+  // check for items to process
+  for (count = 0, first = NULL, prev = NULL, curr = chan; curr->topic != NULL && count < MAX_REQ_REGS; curr++) {
+    // check for MODBUS read mapping
+    if (curr->mb.slave == 0 || !curr->mb.input) {
+      continue;
+    }
+
+    // remember first item with MODBUS mapping
+    if (first == NULL) {
+      first = curr;
+    }
+
+    // stop if slave or register type has changed
+    if (curr->mb.slave != first->mb.slave || curr->mb.input_reg != first->mb.input_reg) {
+      break;
+    }
+    if (curr->mb.type == IOCONF_MB_TYPE_BIT && first->mb.type != IOCONF_MB_TYPE_BIT) {
+      break;
+    }
+    if (curr->mb.type != IOCONF_MB_TYPE_BIT && first->mb.type == IOCONF_MB_TYPE_BIT) {
+      break;
+    }
+
     if (prev != NULL) {
-      if (curr->slave != prev->slave || curr->input_reg != prev->input_reg) {
-        break;
+      // skip items with same address
+      if (curr->mb.addr == prev->mb.addr) {
+        continue;
       }
-      if (curr->addr != (prev->addr + 1)) {
+
+      // check for continuous address range
+      if (curr->mb.addr != (prev->mb.addr + 1)) {
         break;
       }
     }
+
+    prev = curr;
+    count++;
   }
 
+  // check, if we have at last one item found
+  if (first == NULL) {
+    return 0;
+  }
+
+  // skip items without mapping
+  chan = first;
+
   // set slave address
-  ret = modbus_set_slave(ctx, reg_pos->slave);
+  ret = modbus_set_slave(ctx, chan->mb.slave);
   if (ret < 0) {
-    syslog(LOG_WARNING, "Failed to set MODBUS slave address %d", reg_pos->slave);
-    reg_pos = curr;
+    syslog(LOG_WARNING, "Failed to set MODBUS slave address %d", chan->mb.slave);
+    chan = curr;
     return 0;
   }
 
   // read registers
-  if (reg_pos->input_reg) {
-    ret = modbus_read_input_registers(ctx, reg_pos->addr, count, buf);
+  if (chan->mb.type == IOCONF_MB_TYPE_BIT) {
+    ret = read_bits(count, curr);
   } else {
-    ret = modbus_read_registers(ctx, reg_pos->addr, count, buf);
+    ret = read_registers(count, curr);
   }
   if (ret < 0) {
-    syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d)", reg_pos->slave, reg_pos->addr, count);
-    reg_pos = curr;
+    syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d)", chan->mb.slave, chan->mb.addr, count);
+    chan = curr;
     return 0;
   }
 
-  // process values
-  for (p = buf; reg_pos != curr; reg_pos++, p++) {
-    if (strcmp(FMT_BITMASK, reg_pos->mqtt_fmt) == 0) {
-      mqtt_publish_bitmask(reg_pos->mqtt_topic, (uint32_t) *p, (int) reg_pos->offset, (int) reg_pos->scale);
-    } else if (strcmp(FMT_BITNAMES, reg_pos->mqtt_fmt) == 0) {
-      mqtt_publish_bitnames(reg_pos->mqtt_topic, (uint32_t) *p, (int) reg_pos->offset, &reg_pos->mqtt_fmt[sizeof(FMT_BITNAMES)]);
-    } else {
-      process_scaled16(reg_pos, *p);
+  return 0;
+
+}
+
+static int read_bits(int count, const IOCONF_CHAN_T *end) {
+  uint8_t buf[MAX_REQ_REGS];
+  int ret;
+  const IOCONF_CHAN_T *prev;
+  uint8_t *p;
+  double val;
+
+  if (chan->mb.input_reg) {
+    ret = modbus_read_input_bits(ctx, chan->mb.addr, count, buf);
+  } else {
+    ret = modbus_read_bits(ctx, chan->mb.addr, count, buf);
+  }
+  if (ret < 0) {
+    return ret;
+  }
+
+  for (prev = NULL, p = buf; chan != end; chan++) {
+    // skip items without modbus read data
+    if (chan->mb.slave == 0 || !chan->mb.input) {
+      continue;
+    }
+
+    // increment data pointer, if address has changed
+    if (prev != NULL && prev->mb.addr != chan->mb.addr) {
+      p++;
+    }
+    prev = chan;
+
+    // process value
+    val = 0.0;
+    switch (chan->mb.type) {
+      case IOCONF_MB_TYPE_BIT:
+        val = *p ? 1.0 : 0.0;
+        break;
+    }
+
+    // send CAN
+    can_send_chan(chan, val);
+
+    // send MQTT topic
+    mqtt_publish_chan(chan, val);
+  }
+
+  return 0;
+}
+
+static int read_registers(int count, const IOCONF_CHAN_T *end) {
+  uint16_t buf[MAX_REQ_REGS];
+  int ret;
+  const IOCONF_CHAN_T *prev;
+  uint16_t *p;
+  double val;
+
+  if (chan->mb.input_reg) {
+    ret = modbus_read_input_registers(ctx, chan->mb.addr, count, buf);
+  } else {
+    ret = modbus_read_registers(ctx, chan->mb.addr, count, buf);
+  }
+  if (ret < 0) {
+    return ret;
+  }
+
+  for (prev = NULL, p = buf; chan != end; chan++) {
+    // skip items without modbus read data
+    if (chan->mb.slave == 0 || !chan->mb.input) {
+      continue;
+    }
+
+    // increment data pointer, if address has changed
+    if (prev != NULL && prev->mb.addr != chan->mb.addr) {
+      p++;
+    }
+    prev = chan;
+
+    // process value
+    val = 0.0;
+    switch (chan->mb.type) {
+      case IOCONF_MB_TYPE_SIGNED:
+        val = ((double) ((int16_t) *p)) *chan->mb.scale + chan->mb.offset;
+        break;
+      case IOCONF_MB_TYPE_UNSIGNED:
+        val = ((double) *p) *chan->mb.scale + chan->mb.offset;
+        break;
+      case IOCONF_MB_TYPE_BITMASK:
+        val = (*p & (1 << ((int) chan->mb.offset))) ? 1.0 : 0.0;
+        break;
+    }
+
+    // send CAN
+    can_send_chan(chan, val);
+
+    // send MQTT topic
+    mqtt_publish_chan(chan, val);
+  }
+
+  return 0;
+}
+
+int mb_write_chan(const IOCONF_CHAN_T *chan, double val) {
+  int ret;
+
+  // check for MODBUS write mapping
+  if (chan->mb.slave == 0 || chan->mb.input) {
+    return 0;
+  }
+
+  // input registers are read only
+  if (chan->mb.input_reg) {
+    return 0;
+  }
+
+  // bitmasks are not supported (no atomic write)
+  if (chan->mb.type == IOCONF_MB_TYPE_BITMASK) {
+    return 0;
+  }
+
+  // set slave address
+  ret = modbus_set_slave(ctx, chan->mb.slave);
+  if (ret < 0) {
+    syslog(LOG_WARNING, "Failed to set MODBUS slave address %d", chan->mb.slave);
+    return -1;
+  }
+
+  if (chan->mb.type == IOCONF_MB_TYPE_BIT) {
+    return modbus_write_bit(ctx, chan->mb.addr, (val > 0.5));
+  } else {
+    val = (val - chan->mb.offset) / chan->mb.scale;
+    switch (chan->mb.type) {
+      case IOCONF_MB_TYPE_SIGNED:
+        return modbus_write_register(ctx, chan->mb.addr, (int16_t) val_limit(val, INT16_MIN, INT16_MAX));
+      case IOCONF_MB_TYPE_UNSIGNED:
+        return modbus_write_register(ctx, chan->mb.addr, (uint16_t) val_limit(val, 0.0, UINT16_MAX));
     }
   }
 
   return 0;
 }
 
-static void process_scaled16(const MB_REG_T *reg, uint16_t val) {
-  struct can_frame *send_frame;
-  int tmp;
-
-  mqtt_publish_scaled16(reg->mqtt_topic, reg->mqtt_fmt, val, reg->offset, reg->scale);
-
-  send_frame = reg->can.frame;
-  if (send_frame != NULL) {
-    tmp = (int) val * reg->can.mul / reg->can.div + reg->can.offset;
-    send_frame->data[reg->can.pos * 2 + 0] = tmp & 0xff;
-    send_frame->data[reg->can.pos * 2 + 1] = (tmp >> 8) & 0xff;
-    if (reg->can.send) {
-      can_send(send_frame);
-    }
+static double val_limit(double val, double min, double max) {
+  if (val < min) {
+    return min;
   }
+
+  if (val > max) {
+    return max;
+  }
+
+  return val;
 }
 
