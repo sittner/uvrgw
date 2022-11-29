@@ -39,9 +39,6 @@ const IOCONF_CHAN_T ioconf_tab[] = {
   { .topic = "uvr/hp_on", .type = IOCONF_CHAN_TYPE_SWITCH,
     .can = { .can_id = 0x181, .pos = 0, .type = IOCONF_CAN_TYPE_BIT, .input = true },
     .mb = { .slave = 11, .addr = 4, .input_reg = false, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
-  { .topic = "uvr/fogo_start", .type = IOCONF_CHAN_TYPE_SWITCH,
-    .can = { .can_id = 0x181, .pos = 1, .type = IOCONF_CAN_TYPE_BIT, .input = true },
-    .mb = { .slave = 10, .addr = 4700, .input_reg = false, .type = IOCONF_MB_TYPE_BIT, .input = false } },
 
   // PDOs from FOGO
   { .topic = "uvr/fogo/rpm", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
