@@ -35,10 +35,18 @@ const IOCONF_CHAN_T ioconf_tab[] = {
   { .topic = "uvr/temp/hp/sp", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .can = { .can_id = 0x381, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true },
     .mb = { .slave = 11, .addr = 1, .input_reg = false, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
+  { .topic = "uvr/mixer/radi", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
+    .can = { .can_id = 0x381, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.0, .input = true } },
 
   { .topic = "uvr/hp_on", .type = IOCONF_CHAN_TYPE_SWITCH,
     .can = { .can_id = 0x181, .pos = 0, .type = IOCONF_CAN_TYPE_BIT, .input = true },
     .mb = { .slave = 11, .addr = 4, .input_reg = false, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
+  { .topic = "uvr/gen_on", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .can = { .can_id = 0x181, .pos = 1, .type = IOCONF_CAN_TYPE_BIT, .input = true } },
+  { .topic = "uvr/pump/radi", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .can = { .can_id = 0x181, .pos = 2, .type = IOCONF_CAN_TYPE_BIT, .input = true } },
+  { .topic = "uvr/pump/circ", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .can = { .can_id = 0x181, .pos = 3, .type = IOCONF_CAN_TYPE_BIT, .input = true } },
 
   // PDOs from FOGO
   { .topic = "uvr/fogo/rpm", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
