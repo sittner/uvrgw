@@ -42,12 +42,20 @@ typedef struct {
 } IOCONF_MB_T;
 
 typedef struct {
+  const char *url;
+  const char *path;
+  double offset;
+  double scale;
+} IOCONF_REST_T;
+
+typedef struct {
   const char *topic;
   int type;
   const char *fmt;
   bool subscribe;
   IOCONF_CAN_T can;
   IOCONF_MB_T mb;
+  IOCONF_REST_T rest;
 } IOCONF_CHAN_T;
 
 extern const IOCONF_CHAN_T ioconf_tab[];

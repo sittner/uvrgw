@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+#define PV_REST_URL "http://10.0.3.10/solar_api/v1/GetPowerFlowRealtimeData.fcgi"
+
 const IOCONF_CHAN_T ioconf_tab[] = {
   // PDOs from UVR
   { .topic = "uvr/temp/store/upper", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
@@ -151,9 +153,26 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .mb = { .slave = 11, .addr = 49, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
     .can = { .can_id = 0x202, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = (1.0 / 60.0), .input = false, .send = true } },
 
+  // PDOs from Fronius GEN24
+  { .topic = "uvr/pv/soc", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
+    .rest = { .url = PV_REST_URL, .path = "Body.Data.Inverters.1.SOC", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x302, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = false, .send = true } },
+  { .topic = "uvr/pv/power_bat", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
+    .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Akku", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x282, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
+  { .topic = "uvr/pv/power_grid", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
+    .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Grid", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x282, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
+  { .topic = "uvr/pv/power_load", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
+    .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Load", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x282, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
+  { .topic = "uvr/pv/power_pv", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
+    .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_PV", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x282, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
+
   // PDOs from OpenHAB
-  { .topic = "uvr/pv_surplus", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f", .subscribe = true,
-    .can = { .can_id = 0x282, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
+//  { .topic = "uvr/pv_surplus", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f", .subscribe = true,
+//    .can = { .can_id = 0x282, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
 
   { .topic = NULL }
 };

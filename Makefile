@@ -9,6 +9,7 @@ SRC = \
 	timer.c \
 	mb.c \
 	mqtt.c \
+	rest.c \
 
 OBJ = $(SRC:.c=.o)
 
@@ -18,7 +19,7 @@ CFLAGS += -I.
 
 CFLAGS += -Wall
 
-LIBS += -lmodbus -lmosquitto
+LIBS += -lmodbus -lmosquitto -lcurl -ljson-c
 
 .PHONY: all clean realclean install
 

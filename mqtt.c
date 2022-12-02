@@ -51,7 +51,6 @@ static void message_callback(struct mosquitto *mosq, void *obj, const struct mos
   memcpy(buf, msg->payload, msg->payloadlen);
   buf[msg->payloadlen] = 0;
 
-
   val = 0.0;
   switch (chan->type) {
     case IOCONF_CHAN_TYPE_SWITCH:

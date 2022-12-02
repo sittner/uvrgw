@@ -4,6 +4,7 @@
 #include "mb.h"
 #include "timer.h"
 #include "mqtt.h"
+#include "rest.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -63,6 +64,10 @@ int main(int argc, char **argv)
     goto fail4;
   }
 
+  if (rest_startup() < 0) {
+    goto fail5;
+  }
+
   while(!exit_flag) {
     fd_set read_fd_set;
     FD_ZERO(&read_fd_set);
@@ -75,23 +80,25 @@ int main(int argc, char **argv)
         continue;
       }
       syslog(LOG_ERR, "Failed on socket select (error %d)", errno);
-      goto fail5;
+      goto fail6;
     }
 
     // handle CAN data
     if (can_handler(&read_fd_set) < 0) {
-      goto fail5;
+      goto fail6;
     }
 
     // check task timers
     if (timer_handler(&read_fd_set) < 0) {
-      goto fail5;
+      goto fail6;
     }
 
   }
     
   ret = 0;
 
+fail6:
+  rest_shutdown();
 fail5:
   mqtt_shutdown();
 fail4:
