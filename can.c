@@ -19,12 +19,14 @@
 #include <sys/eventfd.h>
 #include <syslog.h>
 #include <errno.h>
+#include <pthread.h>
 
 static int can_fd = -1;
 
 #define OUTPUT_BUF_COUNT 32
 
 static struct can_frame output_buf[OUTPUT_BUF_COUNT];
+pthread_mutex_t output_buf_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
@@ -227,6 +229,8 @@ int can_send_chan(const IOCONF_CHAN_T *chan, double val) {
     return 0;
   }
 
+  pthread_mutex_lock(&output_buf_lock);
+
   // search for matching frame buffer
   for (frame = output_buf, found = NULL, i = 0; frame->can_id != 0 && i < OUTPUT_BUF_COUNT; frame++, i++) {
     if (frame->can_id == chan->can.can_id) {
@@ -237,6 +241,7 @@ int can_send_chan(const IOCONF_CHAN_T *chan, double val) {
 
   // exit, if not found
   if (found == NULL) {
+    pthread_mutex_unlock(&output_buf_lock);
     return 0;
   }
 
@@ -276,11 +281,13 @@ int can_send_chan(const IOCONF_CHAN_T *chan, double val) {
   if (chan->can.send) {
     count = write(can_fd, frame, sizeof(struct can_frame));
     if (count != sizeof(struct can_frame)) {
+      pthread_mutex_unlock(&output_buf_lock);
       syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
       return -1;
     }
   }
 
+  pthread_mutex_unlock(&output_buf_lock);
   return 0;
 }
 

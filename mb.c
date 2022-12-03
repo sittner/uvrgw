@@ -14,12 +14,14 @@
 #include <modbus/modbus.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
+#include <pthread.h>
 
 #define RESPONSE_TIMEOUT_MS 200
 
 #define MAX_REQ_REGS 32
 
 static modbus_t *ctx = NULL;
+pthread_mutex_t bus_lock = PTHREAD_MUTEX_INITIALIZER;
 static const IOCONF_CHAN_T *chan = NULL;
 
 static int read_bits(int count, const IOCONF_CHAN_T *end);
@@ -130,14 +132,6 @@ int mb_task(void) {
   // skip items without mapping
   chan = first;
 
-  // set slave address
-  ret = modbus_set_slave(ctx, chan->mb.slave);
-  if (ret < 0) {
-    syslog(LOG_WARNING, "Failed to set MODBUS slave address %d", chan->mb.slave);
-    chan = curr;
-    return 0;
-  }
-
   // read registers
   if (chan->mb.type == IOCONF_MB_TYPE_BIT) {
     ret = read_bits(count, curr);
@@ -151,7 +145,6 @@ int mb_task(void) {
   }
 
   return 0;
-
 }
 
 static int read_bits(int count, const IOCONF_CHAN_T *end) {
@@ -161,11 +154,23 @@ static int read_bits(int count, const IOCONF_CHAN_T *end) {
   uint8_t *p;
   double val;
 
+  pthread_mutex_lock(&bus_lock);
+
+  // set slave address
+  ret = modbus_set_slave(ctx, chan->mb.slave);
+  if (ret < 0) {
+    pthread_mutex_unlock(&bus_lock);
+    return ret;
+  }
+
   if (chan->mb.input_reg) {
     ret = modbus_read_input_bits(ctx, chan->mb.addr, count, buf);
   } else {
     ret = modbus_read_bits(ctx, chan->mb.addr, count, buf);
   }
+
+  pthread_mutex_unlock(&bus_lock);
+
   if (ret < 0) {
     return ret;
   }
@@ -207,11 +212,23 @@ static int read_registers(int count, const IOCONF_CHAN_T *end) {
   uint16_t *p;
   double val;
 
+  pthread_mutex_lock(&bus_lock);
+
+  // set slave address
+  ret = modbus_set_slave(ctx, chan->mb.slave);
+  if (ret < 0) {
+    pthread_mutex_unlock(&bus_lock);
+    return ret;
+  }
+
   if (chan->mb.input_reg) {
     ret = modbus_read_input_registers(ctx, chan->mb.addr, count, buf);
   } else {
     ret = modbus_read_registers(ctx, chan->mb.addr, count, buf);
   }
+
+  pthread_mutex_unlock(&bus_lock);
+
   if (ret < 0) {
     return ret;
   }
@@ -270,26 +287,34 @@ int mb_write_chan(const IOCONF_CHAN_T *chan, double val) {
     return 0;
   }
 
+  pthread_mutex_lock(&bus_lock);
+
   // set slave address
   ret = modbus_set_slave(ctx, chan->mb.slave);
   if (ret < 0) {
+    pthread_mutex_unlock(&bus_lock);
     syslog(LOG_WARNING, "Failed to set MODBUS slave address %d", chan->mb.slave);
     return -1;
   }
 
+  ret = 0;
   if (chan->mb.type == IOCONF_MB_TYPE_BIT) {
-    return modbus_write_bit(ctx, chan->mb.addr, (val > 0.5));
+    ret = modbus_write_bit(ctx, chan->mb.addr, (val > 0.5));
   } else {
     val = (val - chan->mb.offset) / chan->mb.scale;
     switch (chan->mb.type) {
       case IOCONF_MB_TYPE_SIGNED:
-        return modbus_write_register(ctx, chan->mb.addr, (int16_t) val_limit(val, INT16_MIN, INT16_MAX));
+        ret = modbus_write_register(ctx, chan->mb.addr, (int16_t) val_limit(val, INT16_MIN, INT16_MAX));
+        break;
       case IOCONF_MB_TYPE_UNSIGNED:
-        return modbus_write_register(ctx, chan->mb.addr, (uint16_t) val_limit(val, 0.0, UINT16_MAX));
+        ret = modbus_write_register(ctx, chan->mb.addr, (uint16_t) val_limit(val, 0.0, UINT16_MAX));
+        break;
     }
   }
 
-  return 0;
+  pthread_mutex_unlock(&bus_lock);
+
+  return ret;
 }
 
 static double val_limit(double val, double min, double max) {
