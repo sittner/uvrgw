@@ -4,12 +4,16 @@
 
 #define PV_REST_URL "http://10.0.3.10/solar_api/v1/GetPowerFlowRealtimeData.fcgi"
 
+#define HP_SM_REST_URL "http://10.0.3.65/status"
+#define HP_SM_REST_USER "admin"
+#define HP_SM_REST_PWD "FsNmpzhm7OgnUQ94"
+
 const IOCONF_CHAN_T ioconf_tab[] = {
   // PDOs from UVR
   { .topic = "uvr/temp/store/upper", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .can = { .can_id = 0x201, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
-//  { .topic = "uvr/temp/store/lower", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
-//    .can = { .can_id = 0x201, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
+  { .topic = "uvr/temp/store/lower", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
+    .can = { .can_id = 0x201, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
   { .topic = "uvr/temp/radi/send", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .can = { .can_id = 0x201, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
   { .topic = "uvr/temp/radi/return", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
@@ -36,15 +40,15 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .can = { .can_id = 0x381, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true } },
   { .topic = "uvr/temp/hp/sp", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .can = { .can_id = 0x381, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = true },
-//    .mb = { .slave = 11, .addr = 1, .input_reg = false, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
-    .mb = { .slave = 11, .addr = 10, .input_reg = false, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
+    .mb = { .slave = 11, .addr = 1, .input_reg = false, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
+//    .mb = { .slave = 11, .addr = 10, .input_reg = false, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
   { .topic = "uvr/mixer/radi", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
     .can = { .can_id = 0x381, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.0, .input = true } },
 
   { .topic = "uvr/hp_on", .type = IOCONF_CHAN_TYPE_SWITCH,
     .can = { .can_id = 0x181, .pos = 0, .type = IOCONF_CAN_TYPE_BIT, .input = true },
-//    .mb = { .slave = 11, .addr = 4, .input_reg = false, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
-    .mb = { .slave = 11, .addr = 12, .input_reg = false, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
+    .mb = { .slave = 11, .addr = 4, .input_reg = false, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
+//    .mb = { .slave = 11, .addr = 12, .input_reg = false, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = false } },
   { .topic = "uvr/gen_on", .type = IOCONF_CHAN_TYPE_SWITCH,
     .can = { .can_id = 0x181, .pos = 1, .type = IOCONF_CAN_TYPE_BIT, .input = true } },
   { .topic = "uvr/pump/radi", .type = IOCONF_CHAN_TYPE_SWITCH,
@@ -137,6 +141,18 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .mb = { .slave = 10, .addr = 1059, .input_reg = true, .type = IOCONF_MB_TYPE_BITMASK, .offset = 7.0, .input = true } },
 
   // PDOs from DAIKIN
+  { .topic = "uvr/daikin/error", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
+    .mb = { .slave = 11, .addr = 21, .input_reg = true, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
+  { .topic = "uvr/daikin/pump_on", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .mb = { .slave = 11, .addr = 30, .input_reg = true, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
+  { .topic = "uvr/daikin/comp_on", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .mb = { .slave = 11, .addr = 31, .input_reg = true, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
+  { .topic = "uvr/daikin/heater_on", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .mb = { .slave = 11, .addr = 32, .input_reg = true, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
+  { .topic = "uvr/daikin/defrost", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .mb = { .slave = 11, .addr = 35, .input_reg = true, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
+  { .topic = "uvr/daikin/hot_start", .type = IOCONF_CHAN_TYPE_SWITCH,
+    .mb = { .slave = 11, .addr = 36, .input_reg = true, .type = IOCONF_MB_TYPE_UNSIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
   { .topic = "uvr/daikin/temp_heat_exchanger", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
     .mb = { .slave = 11, .addr = 40, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
     .can = { .can_id = 0x202, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = false, .send = false } },
@@ -146,9 +162,9 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .mb = { .slave = 11, .addr = 42, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
     .can = { .can_id = 0x202, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = false, .send = false } },
 //  { .topic = "uvr/daikin/temp_warm_water", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
-  { .topic = "uvr/temp/store/lower", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
-    .mb = { .slave = 11, .addr = 43, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
-    .can = { .can_id = 0x202, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = false, .send = false } },
+//  { .topic = "uvr/temp/store/lower", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
+//    .mb = { .slave = 11, .addr = 43, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
+//    .can = { .can_id = 0x202, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = false, .send = false } },
   { .topic = "uvr/daikin/temp_outdoor", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
     .mb = { .slave = 11, .addr = 44, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true } },
   { .topic = "uvr/daikin/temp_refrigerant", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
@@ -157,11 +173,22 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .mb = { .slave = 11, .addr = 49, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
     .can = { .can_id = 0x202, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = (1.0 / 60.0), .input = false, .send = true } },
 
+  // PDOs from DAIKIN smartmeter
+  { .topic = "uvr/daikin/power_l1", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
+    .rest = { .url = HP_SM_REST_URL, .user = HP_SM_REST_USER, .pwd = HP_SM_REST_PWD, .path = "emeters.0.power", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x382, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
+  { .topic = "uvr/daikin/power_l2", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
+    .rest = { .url = HP_SM_REST_URL, .user = HP_SM_REST_USER, .pwd = HP_SM_REST_PWD, .path = "emeters.1.power", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x382, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
+  { .topic = "uvr/daikin/power_l3", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
+    .rest = { .url = HP_SM_REST_URL, .user = HP_SM_REST_USER, .pwd = HP_SM_REST_PWD, .path = "emeters.2.power", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x382, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
+
   // PDOs from Fronius GEN24
   { .topic = "uvr/pv/soc", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .rest = { .url = PV_REST_URL, .path = "Body.Data.Inverters.1.SOC", .offset = 0.0, .scale = 1.0 },
     .can = { .can_id = 0x302, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 0.1, .input = false, .send = true } },
-  { .topic = "uvr/pv/power_bat", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
+  { .topic = "uvr/pv/power_bat", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
     .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Akku", .offset = 0.0, .scale = 1.0 },
     .can = { .can_id = 0x282, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
   { .topic = "uvr/pv/power_grid", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",

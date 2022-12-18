@@ -44,6 +44,8 @@ typedef struct {
 typedef struct {
   const char *url;
   const char *path;
+  const char *user;
+  const char *pwd;
   double offset;
   double scale;
 } IOCONF_REST_T;

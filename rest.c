@@ -19,7 +19,7 @@ typedef struct {
 
 static int poll_timer;
 
-static json_object *rest_get_json(const char *url, long timeout);
+static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout);
 static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb, void *userp);
 static json_object *json_path_lookup(json_object *root, const char *path);
 static json_object *json_path_lookup_recursive(json_object *root, char *path);
@@ -69,7 +69,7 @@ int rest_task(void) {
     if (url == NULL || strcmp(chan->rest.url, url) != 0) {
       url = chan->rest.url;
       json_object_put(json);
-      json = rest_get_json(url, REST_POLL_TIMEOUT_SEC);
+      json = rest_get_json(url, chan->rest.user, chan->rest.pwd, REST_POLL_TIMEOUT_SEC);
     }
 
     // no valid json -> skip item
@@ -112,7 +112,7 @@ int rest_task(void) {
   return 0;
 }
 
-static json_object *rest_get_json(const char *url, long timeout) {
+static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout) {
   CURL *ch;
   REST_GET_STATE_T state = { .tok = NULL, .json = NULL } ;
   CURLcode err;
@@ -140,6 +140,14 @@ static json_object *rest_get_json(const char *url, long timeout) {
 
   // set default user agent
   curl_easy_setopt(ch, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+
+  // set auth data
+  if (user != NULL) {
+    curl_easy_setopt(ch, CURLOPT_USERNAME, user);
+  }
+  if (pwd != NULL) {
+    curl_easy_setopt(ch, CURLOPT_PASSWORD, pwd);
+  }
 
   // set timeout
   curl_easy_setopt(ch, CURLOPT_TIMEOUT, timeout);
@@ -216,8 +224,14 @@ static json_object *json_path_lookup_recursive(json_object *root, char *path) {
     *sep = 0;
   }
 
-  if (!json_object_object_get_ex(root, path, &val)) {
-    return NULL;
+  if (json_object_is_type(root, json_type_array)) {
+    if ((val = json_object_array_get_idx(root, atoi(path))) == NULL) {
+      return NULL;
+    }
+  } else {
+    if (!json_object_object_get_ex(root, path, &val)) {
+      return NULL;
+    }
   }
 
   if (sep == NULL) {
