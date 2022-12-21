@@ -11,6 +11,7 @@
 #include <syslog.h>
 #include <json-c/json.h>
 #include <curl/curl.h>
+#include <ctype.h>
 
 typedef struct {
   struct json_tokener *tok;
@@ -23,6 +24,19 @@ static json_object *rest_get_json(const char *url, const char *user, const char 
 static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb, void *userp);
 static json_object *json_path_lookup(json_object *root, const char *path);
 static json_object *json_path_lookup_recursive(json_object *root, char *path);
+
+static int parse_index(const char *s) {
+  const char *p;
+
+  // allow numbers only
+  for (p = s; isdigit(*p); p++);
+  if (*p != 0) {
+    return -1;
+  }
+
+  // convert to int
+  return atoi(s);
+}
 
 int rest_startup(void) {
   // initialize libcurl
@@ -49,6 +63,7 @@ int rest_task(void) {
   const char *url;
   json_object *json;
   json_object *json_val;
+  enum json_type type;
   double val;
 
   // check poll period
@@ -80,7 +95,8 @@ int rest_task(void) {
     // lookup path, skip if not found
     // convert value to double, if found
     json_val = json_path_lookup(json, chan->rest.path);
-    switch (json_object_get_type(json_val)) {
+    type = json_object_get_type(json_val);
+    switch (type) {
       case json_type_boolean:
         val = json_object_get_boolean(json_val) ? 1.0 : 0.0;
         break;
@@ -90,7 +106,11 @@ int rest_task(void) {
       case json_type_double:
         val = json_object_get_double(json_val);
         break;
+      case json_type_null:
+        syslog(LOG_WARNING, "Failed lookup json path '%s' for url '%s'.", chan->rest.path, chan->rest.url);
+        continue;
       default:
+        syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, chan->rest.path, chan->rest.url);
         continue;
     }
 
@@ -213,6 +233,7 @@ static json_object *json_path_lookup(json_object *root, const char *path) {
 
 static json_object *json_path_lookup_recursive(json_object *root, char *path) {
   char *sep;
+  int i;
   json_object *val;
 
   if (path == NULL) {
@@ -225,7 +246,8 @@ static json_object *json_path_lookup_recursive(json_object *root, char *path) {
   }
 
   if (json_object_is_type(root, json_type_array)) {
-    if ((val = json_object_array_get_idx(root, atoi(path))) == NULL) {
+    i = parse_index(path);
+    if (i < 0 || (val = json_object_array_get_idx(root, i)) == NULL) {
       return NULL;
     }
   } else {

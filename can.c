@@ -23,6 +23,21 @@
 
 static int can_fd = -1;
 
+// TODO:
+/*
+Sende Zeitstempel als node 1 (UVR auf 2 ändern).
+Intervall: 60s
+z.B.:
+  can0  100   [6]  F0 96 F2 03 9A 37
+
+Millisekunden seit 0:00 (lo -> hi)
+F0 96 F2 03
+
+Tage seit 1.1.1984 (lo -> hi)
+9A 37
+*/
+
+
 #define OUTPUT_BUF_COUNT 32
 
 static struct can_frame output_buf[OUTPUT_BUF_COUNT];
