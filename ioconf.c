@@ -2,11 +2,9 @@
 
 #include <stddef.h>
 
-#define PV_REST_URL "http://10.0.3.10/solar_api/v1/GetPowerFlowRealtimeData.fcgi"
-
-#define HP_SM_REST_URL "http://10.0.3.65/status"
-#define HP_SM_REST_USER "admin"
-#define HP_SM_REST_PWD "FsNmpzhm7OgnUQ94"
+#define PV_REST_URL    "http://10.0.3.10/solar_api/v1/GetPowerFlowRealtimeData.fcgi"
+#define HP_SM_REST_URL "http://10.0.3.65/status", .user = "admin", .pwd = "FsNmpzhm7OgnUQ94"
+#define GOE_REST_URL   "http://10.0.1.70/api/status?filter=nrg"
 
 const IOCONF_CHAN_T ioconf_tab[] = {
   // PDOs from UVR
@@ -60,7 +58,8 @@ const IOCONF_CHAN_T ioconf_tab[] = {
   { .topic = "uvr/fogo/rpm", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
     .mb = { .slave = 10, .addr = 1000, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 1.0, .input = true } },
   { .topic = "uvr/fogo/load_p", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
-    .mb = { .slave = 10, .addr = 1016, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.1, .input = true } },
+    .mb = { .slave = 10, .addr = 1016, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.1, .input = true },
+    .can = { .can_id = 0x302, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1000.0, .input = false, .send = true } },
   { .topic = "uvr/fogo/load_q", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .mb = { .slave = 10, .addr = 1020, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.1, .input = true } },
   { .topic = "uvr/fogo/load_s", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
@@ -173,17 +172,6 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .mb = { .slave = 11, .addr = 49, .input_reg = true, .type = IOCONF_MB_TYPE_SIGNED, .offset = 0.0, .scale = 0.01, .input = true },
     .can = { .can_id = 0x202, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = (1.0 / 60.0), .input = false, .send = true } },
 
-  // PDOs from DAIKIN smartmeter
-  { .topic = "uvr/daikin/power_l1", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
-    .rest = { .url = HP_SM_REST_URL, .user = HP_SM_REST_USER, .pwd = HP_SM_REST_PWD, .path = "emeters.0.power", .offset = 0.0, .scale = 1.0 },
-    .can = { .can_id = 0x382, .pos = 0, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
-  { .topic = "uvr/daikin/power_l2", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
-    .rest = { .url = HP_SM_REST_URL, .user = HP_SM_REST_USER, .pwd = HP_SM_REST_PWD, .path = "emeters.1.power", .offset = 0.0, .scale = 1.0 },
-    .can = { .can_id = 0x382, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
-  { .topic = "uvr/daikin/power_l3", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
-    .rest = { .url = HP_SM_REST_URL, .user = HP_SM_REST_USER, .pwd = HP_SM_REST_PWD, .path = "emeters.2.power", .offset = 0.0, .scale = 1.0 },
-    .can = { .can_id = 0x382, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
-
   // PDOs from Fronius GEN24
   { .topic = "uvr/pv/soc", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.1f",
     .rest = { .url = PV_REST_URL, .path = "Body.Data.Inverters.1.SOC", .offset = 0.0, .scale = 1.0 },
@@ -195,11 +183,21 @@ const IOCONF_CHAN_T ioconf_tab[] = {
     .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Grid", .offset = 0.0, .scale = 1.0 },
     .can = { .can_id = 0x282, .pos = 2, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
   { .topic = "uvr/pv/power_load", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
-    .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Load", .offset = 0.0, .scale = 1.0 },
+    .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_Load", .offset = 0.0, .scale = -1.0 },
     .can = { .can_id = 0x282, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = false } },
   { .topic = "uvr/pv/power_pv", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
     .rest = { .url = PV_REST_URL, .path = "Body.Data.Site.P_PV", .offset = 0.0, .scale = 1.0 },
     .can = { .can_id = 0x282, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
+
+  // PDOs from DAIKIN smartmeter
+  { .topic = "uvr/daikin/power_l1", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.2f",
+    .rest = { .url = HP_SM_REST_URL, .path = "total_power", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x302, .pos = 4, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
+
+  // PDOs from wallbox
+  { .topic = "uvr/goe/power", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f",
+    .rest = { .url = GOE_REST_URL, .path = "nrg.11", .offset = 0.0, .scale = 1.0 },
+    .can = { .can_id = 0x302, .pos = 6, .type = IOCONF_CAN_TYPE_S16, .offset = 0.0, .scale = 1.0, .input = false, .send = true } },
 
   // PDOs from OpenHAB
 //  { .topic = "uvr/pv_surplus", .type = IOCONF_CHAN_TYPE_NUMBER, .fmt = "%.0f", .subscribe = true,
