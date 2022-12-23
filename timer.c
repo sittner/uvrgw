@@ -1,4 +1,5 @@
 #include "timer.h"
+#include "can.h"
 #include "mb.h"
 #include "rest.h"
 
@@ -78,6 +79,10 @@ int timer_handler(fd_set *fd_set) {
 
   if (read(timer_fd, &u, sizeof(u)) != sizeof(u)) {
     syslog(LOG_ERR, "failed to read timer event.");
+    return -1;
+  }
+
+  if (can_task() < 0) {
     return -1;
   }
 

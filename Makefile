@@ -10,6 +10,7 @@ SRC = \
 	mb.c \
 	mqtt.c \
 	rest.c \
+	ntp_check.c \
 
 OBJ = $(SRC:.c=.o)
 

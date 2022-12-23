@@ -8,6 +8,7 @@
 
 int can_startup(const char *ifname);
 void can_shutdown(void);
+int can_task(void);
 void can_update_fds(fd_set *fd_set);
 int can_handler(fd_set *fd_set);
 

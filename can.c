@@ -1,6 +1,8 @@
 #include "can.h"
 #include "mqtt.h"
 #include "mb.h"
+#include "timer.h"
+#include "ntp_check.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -20,23 +22,13 @@
 #include <syslog.h>
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
+#include <sys/time.h>
+
+#define TIMESTAMP_PERIOD_MS 60000
 
 static int can_fd = -1;
-
-// TODO:
-/*
-Sende Zeitstempel als node 1 (UVR auf 2 ändern).
-Intervall: 60s
-z.B.:
-  can0  100   [6]  F0 96 F2 03 9A 37
-
-Millisekunden seit 0:00 (lo -> hi)
-F0 96 F2 03
-
-Tage seit 1.1.1984 (lo -> hi)
-9A 37
-*/
-
+static int timestamp_timer;
 
 #define OUTPUT_BUF_COUNT 32
 
@@ -46,6 +38,7 @@ pthread_mutex_t output_buf_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
 static double val_limit(double val, double min, double max);
+static int send_timestamp(void);
 
 int can_startup(const char *ifname) {
   const IOCONF_CHAN_T *chan;
@@ -105,6 +98,9 @@ int can_startup(const char *ifname) {
     goto fail1;
   }
 
+  // init timestamp send timer
+  timestamp_timer = 0;
+
   return 0;
 
 fail1:
@@ -118,6 +114,19 @@ void can_shutdown(void) {
   // close socket
   close(can_fd);
   can_fd = -1;
+}
+
+int can_task(void) {
+  // send timestamp every 60 s
+  timestamp_timer += TIMER_PERIOD_MS;
+  if (timestamp_timer >= TIMESTAMP_PERIOD_MS) {
+    timestamp_timer -= TIMESTAMP_PERIOD_MS;
+    if (send_timestamp() < 0) {
+      return -1;
+    }
+  }
+
+  return 0;
 }
 
 int can_handler(fd_set *fd_set) {
@@ -196,39 +205,6 @@ int can_handler(fd_set *fd_set) {
   return 0;
 }
 
-static uint32_t read_value(const uint8_t *p, int len) {
-  int i;
-  uint32_t val;
-
-  for (i = 1, val = 0; i <= len; i++) {
-    val <<= 8;
-    val |= p[len - i];
-  }
-
-  return val;
-}
-
-static void write_value(uint8_t *p, int len, uint32_t val) {
-  int i;
-
-  for (i = 0; i < len; i++) {
-    p[i] = val & 0xff;
-    val >>= 8;
-  }
-}
-
-static double val_limit(double val, double min, double max) {
-  if (val < min) {
-    return min;
-  }
-
-  if (val > max) {
-    return max;
-  }
-
-  return val;
-}
-
 void can_update_fds(fd_set *fd_set) {
   FD_SET(can_fd, fd_set);
 }
@@ -304,5 +280,96 @@ int can_send_chan(const IOCONF_CHAN_T *chan, double val) {
 
   pthread_mutex_unlock(&output_buf_lock);
   return 0;
+}
+
+static uint32_t read_value(const uint8_t *p, int len) {
+  int i;
+  uint32_t val;
+
+  for (i = 1, val = 0; i <= len; i++) {
+    val <<= 8;
+    val |= p[len - i];
+  }
+
+  return val;
+}
+
+static void write_value(uint8_t *p, int len, uint32_t val) {
+  int i;
+
+  for (i = 0; i < len; i++) {
+    p[i] = val & 0xff;
+    val >>= 8;
+  }
+}
+
+static double val_limit(double val, double min, double max) {
+  if (val < min) {
+    return min;
+  }
+
+  if (val > max) {
+    return max;
+  }
+
+  return val;
+}
+
+static int send_timestamp(void) {
+  struct timeval tv;
+  struct tm lt, tmp;
+  uint32_t msecs;
+  uint16_t days;
+  struct can_frame frame;
+  ssize_t count;
+
+  // check for valid NTP time
+  if (!ntp_check()) {
+    syslog(LOG_WARNING, "NTP daemon not synced, will not send timeframe.");
+    return 0;
+  }
+
+  // get UTC time
+  if (gettimeofday(&tv, NULL) < 0) {
+    syslog(LOG_ERR, "Failed to get current time (error = %d)", errno);
+    return -1;
+  }
+
+  // convert to local time
+  localtime_r(&tv.tv_sec, &lt);
+
+  // get milliseconds since 0:00
+  memcpy(&tmp, &lt, sizeof(struct tm));
+  tmp.tm_sec = 0;
+  tmp.tm_min = 0;
+  tmp.tm_hour = 0;
+  msecs = ((tv.tv_sec - mktime(&tmp)) * 1000) + (tv.tv_usec / 1000);
+
+  // get days since 01-01-1984
+  memcpy(&tmp, &lt, sizeof(struct tm));
+  tmp.tm_mday = 1;
+  tmp.tm_mon = 0;
+  tmp.tm_year = 84;
+  days = (tv.tv_sec - mktime(&tmp)) / (24 * 60 * 60);
+
+  // build can frame
+  memset(&frame, 0, sizeof(frame));
+  frame.can_id = 0x100;
+  frame.can_dlc = 6;
+  frame.data[0] = (msecs >> 0) & 0xff;
+  frame.data[1] = (msecs >> 8) & 0xff;
+  frame.data[2] = (msecs >> 16) & 0xff;
+  frame.data[3] = (msecs >> 24) & 0xff;
+  frame.data[4] = (days >> 0) & 0xff;
+  frame.data[5] = (days >> 8) & 0xff;
+
+  // send frame
+  count = write(can_fd, &frame, sizeof(struct can_frame));
+  if (count != sizeof(struct can_frame)) {
+    syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+    return -1;
+  }
+
+  return 1;
 }
 
