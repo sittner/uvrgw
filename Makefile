@@ -27,7 +27,7 @@ LIBS += -lmodbus -lmosquitto -lcurl -ljson-c
 all: $(TARGET)
 
 $(TARGET): $(OBJ)
-	$(CC) $(LDFLAGS) -o $(TARGET) $(OBJ) $(DBUS_OBJ) $(LIBS)
+	$(CC) $(LDFLAGS) -o $(TARGET) $(OBJ) $(LIBS)
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) -o $@ $< 
