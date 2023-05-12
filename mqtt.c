@@ -7,7 +7,6 @@
 #include <string.h>
 #include <syslog.h>
 #include <fcntl.h>
-#include <mosquitto.h>
 
 #define KEEPALIVE_PERIOD 300
 
@@ -69,7 +68,7 @@ static void message_callback(struct mosquitto *mosq, void *obj, const struct mos
   }
 
   // send CAN message
-  can_send_chan(chan, val);
+  // TODO can_send_chan(chan, val);
 
   // write MODBUS
   mb_write_chan(chan, val);

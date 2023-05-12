@@ -3,6 +3,7 @@
 #include "mb.h"
 #include "timer.h"
 #include "ntp_check.h"
+#include "uvrgw_conf.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -25,103 +26,107 @@
 #include <time.h>
 #include <sys/time.h>
 
-#define TIMESTAMP_PERIOD_MS 60000
+static int can_ifaces_count;
+static CAN_IFACE_T *can_ifaces;
 
-static int can_fd = -1;
-static int timestamp_timer;
-
-#define OUTPUT_BUF_COUNT 32
-
-static struct can_frame output_buf[OUTPUT_BUF_COUNT];
-pthread_mutex_t output_buf_lock = PTHREAD_MUTEX_INITIALIZER;
-
+static int iface_configure(cfg_t *cfg, void *ctx, void *child);
+static int frame_configure(cfg_t *cfg, void *ctx, void *child);
+static int value_configure(cfg_t *cfg, void *ctx, void *child);
+static int iface_startup(CAN_IFACE_T *iface);
+static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface);
+static int iface_task(CAN_IFACE_T *iface);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
 static double val_limit(double val, double min, double max);
-static int send_timestamp(void);
+static int send_value(void *v, double f);
+static int send_timestamp(CAN_IFACE_T *iface);
 
-int can_startup(const char *ifname) {
-  const IOCONF_CHAN_T *chan;
-  struct can_frame *frame, *found;
-  int i;
+void can_init(void) {
+  can_ifaces_count = 0;
+  can_ifaces = NULL;
+}
 
-  // setup output buffers
-  memset(output_buf, 0, sizeof(output_buf));
-  for (chan = ioconf_tab; chan->topic != NULL ; chan++) {
-    // check for CAN output mapping
-    if (chan->can.can_id == 0 || chan->can.input) {
-      continue;
-    }
+int can_configure(cfg_t *cfg) {
+  return uvrgw_conf_config_childs(cfg, "can", &can_ifaces_count, (void **) &can_ifaces, sizeof(CAN_IFACE_T), NULL, iface_configure);
+}
 
-    // search for frame
-    for (frame = output_buf, found = NULL, i = 0; frame->can_id != 0; frame++, i++) {
-      if (i >= OUTPUT_BUF_COUNT) {
-        syslog(LOG_ERR, "Maximum CAN output buffer count exceeded.");
-        goto fail0;
+void can_register_disp_cbs(void) {
+  CAN_IFACE_T *iface;
+  int iface_idx;
+  CAN_FRAME_T *frame;
+  int frame_idx;
+  CAN_VAL_T *val;
+  int val_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
+      for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {
+        if (frame->dir == UVRGW_CONF_VAL_DIR_OUT) {
+          uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+        }
       }
+    }
+  }
+}
 
-      if (frame->can_id == chan->can.can_id) {
-        found = frame;
-        break;
+void can_unconfigure(void) {
+  CAN_IFACE_T *iface;
+  int iface_idx;
+  CAN_FRAME_T *frame;
+  int frame_idx;
+  CAN_VAL_T *val;
+  int val_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
+      for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {
+        free((void *) val->name);
       }
+      pthread_mutex_destroy(&frame->send_buf_mutex);
+      free(frame->values);
     }
+    free((void *) iface->interface);
+    free(iface->frames);
+  }
+  free(can_ifaces);
+}
 
-    // initialize frame, if not found
-    if (found == NULL) {
-      frame->can_id = chan->can.can_id;
-      frame->can_dlc = 8;
+int can_startup(void) {
+  CAN_IFACE_T *iface;
+  int iface_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    if (iface_startup(iface) < 0) {
+      goto fail;
     }
   }
-
-  // open socket
-  if ((can_fd = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
-    syslog(LOG_ERR, "Could not create CAN socket");
-    goto fail0;
-  }
-
-  // get interface index
-  struct ifreq ifr;
-  memset(&ifr, 0, sizeof(ifr));
-  strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
-  if (ioctl(can_fd, SIOCGIFINDEX, &ifr) < 0) {
-    syslog(LOG_ERR, "Could not set CAN interface name '%s'", ifname);
-    goto fail1;
-  }
-
-  // bind to socket
-  struct sockaddr_can addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.can_family = AF_CAN;
-  addr.can_ifindex = ifr.ifr_ifindex;
-  if (bind(can_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-    syslog(LOG_ERR, "Could not bind to CAN socket");
-    goto fail1;
-  }
-
-  // init timestamp send timer
-  timestamp_timer = 0;
 
   return 0;
 
-fail1:
-  close(can_fd);
-  can_fd = -1;
-fail0:
+fail:
+  can_shutdown();
   return -1;
 }
 
 void can_shutdown(void) {
-  // close socket
-  close(can_fd);
-  can_fd = -1;
+  CAN_IFACE_T *iface;
+  int iface_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    if (iface->can_fd >= 0) {
+      // close socket
+      close(iface->can_fd);
+      iface->can_fd = -1;
+    }
+  }
 }
 
 int can_task(void) {
-  // send timestamp every 60 s
-  timestamp_timer += TIMER_PERIOD_MS;
-  if (timestamp_timer >= TIMESTAMP_PERIOD_MS) {
-    timestamp_timer -= TIMESTAMP_PERIOD_MS;
-    if (send_timestamp() < 0) {
+  CAN_IFACE_T *iface;
+  int iface_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    if (iface_task(iface) < 0) {
       return -1;
     }
   }
@@ -130,19 +135,134 @@ int can_task(void) {
 }
 
 int can_handler(fd_set *fd_set) {
+  CAN_IFACE_T *iface;
+  int iface_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    if (iface_rx_handler(fd_set, iface) < 0) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+void can_update_fds(fd_set *fd_set) {
+  CAN_IFACE_T *iface;
+  int iface_idx;
+
+  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    if (iface->can_fd >= 0) {
+      FD_SET(iface->can_fd, fd_set);
+    }
+  }
+}
+
+static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
+  CAN_IFACE_T *iface = (CAN_IFACE_T *) child;
+  const char *ifname;
+
+  ifname = cfg_getstr(cfg, "interface");
+  if (ifname == NULL) {
+    syslog(LOG_ERR, "CAN inteface name not given.");
+    return -1;
+  }
+
+  iface->interface = strdup(ifname);
+  iface->timestamp_period = cfg_getint(cfg, "timestamp_period");
+  iface->send_timeout = cfg_getint(cfg, "send_timeout");
+
+  iface->can_fd = -1;
+
+  return uvrgw_conf_config_childs(cfg, "frame", &iface->frames_count, (void **) &iface->frames, sizeof(CAN_FRAME_T), iface, frame_configure);
+}
+
+static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
+  CAN_FRAME_T *frame = (CAN_FRAME_T *) child;
+
+  frame->iface = (CAN_IFACE_T *) ctx;
+
+  frame->can_id = cfg_getint(cfg, "can_id");
+  frame->dir = cfg_getint(cfg, "dir");
+
+  pthread_mutex_init(&frame->send_buf_mutex, NULL);
+
+  return uvrgw_conf_config_childs(cfg, "value", &frame->values_count, (void **) &frame->values, sizeof(CAN_VAL_T), frame, value_configure);
+}
+
+static int value_configure(cfg_t *cfg, void *ctx, void *child) {
+  CAN_VAL_T *val = (CAN_VAL_T *) child;
+
+  val->frame = (CAN_FRAME_T *) ctx;
+
+  val->name = strdup(cfg_title(cfg));
+  val->type = cfg_getint(cfg, "type");
+  val->pos = cfg_getint(cfg, "pos");
+  val->scale = cfg_getfloat(cfg, "scale");
+  val->offset = cfg_getfloat(cfg, "offset");
+
+  if (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT) {
+    val->disp = uvrgw_conf_register_val(val->name);
+  }
+
+  return 0;
+}
+
+static int iface_startup(CAN_IFACE_T *iface) {
+  // open socket
+  if ((iface->can_fd = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+    syslog(LOG_ERR, "Could not create CAN socket");
+    goto fail0;
+  }
+
+  // get interface index
+  struct ifreq ifr;
+  memset(&ifr, 0, sizeof(ifr));
+  strncpy(ifr.ifr_name, iface->interface, IFNAMSIZ);
+  if (ioctl(iface->can_fd, SIOCGIFINDEX, &ifr) < 0) {
+    syslog(LOG_ERR, "Could not set CAN interface name '%s'", iface->interface);
+    goto fail1;
+  }
+
+  // bind to socket
+  struct sockaddr_can addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.can_family = AF_CAN;
+  addr.can_ifindex = ifr.ifr_ifindex;
+  if (bind(iface->can_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+    syslog(LOG_ERR, "Could not bind to CAN socket");
+    goto fail1;
+  }
+
+  // init timestamp send timer
+  iface->timestamp_timer = 0;
+
+  return 0;
+
+fail1:
+  close(iface->can_fd);
+  iface->can_fd = -1;
+fail0:
+  return -1;
+}
+
+static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
   struct can_frame rcvd_frame;
   ssize_t count;
   uint8_t *p;
-  const IOCONF_CHAN_T *chan;
-  double val;
+  CAN_FRAME_T *frame;
+  int frame_idx;
+  CAN_VAL_T *val;
+  int val_idx;
+  double f;
 
   // check if fd is set
-  if (!FD_ISSET(can_fd, fd_set)) {
+  if (!FD_ISSET(iface->can_fd, fd_set)) {
     return 0;
   }
 
   // read frame
-  count = read(can_fd, &rcvd_frame, sizeof(rcvd_frame));
+  count = read(iface->can_fd, &rcvd_frame, sizeof(rcvd_frame));
   if (count != sizeof(struct can_frame)) {
     syslog(LOG_ERR, "Failed to read from CAN socket (error = %d)", errno);
     return -1;
@@ -153,132 +273,99 @@ int can_handler(fd_set *fd_set) {
     return 0;
   }
 
-  for (chan = ioconf_tab; chan->topic != NULL ; chan++) {
+  for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
     // check for CAN input mapping
-    if (chan->can.can_id == 0 || !chan->can.input) {
+    if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_IN)) {
       continue;
     }
 
     // check for matching CAN-ID
-    if ((rcvd_frame.can_id & CAN_SFF_MASK) != chan->can.can_id) {
+    if ((rcvd_frame.can_id & CAN_SFF_MASK) != frame->can_id) {
       continue;
     }
 
-    // read value
-    if (chan->can.type == IOCONF_CAN_TYPE_BIT) {
-      p = &rcvd_frame.data[(chan->can.pos >> 3)];
-      val = (*p & (1 << (chan->can.pos & 7))) ? 1.0 : 0.0;
-    } else {
-      p = &rcvd_frame.data[chan->can.pos];
-      switch (chan->can.type) {
-        case IOCONF_CAN_TYPE_U8:
-          val = (double) read_value(p, 1);
-          break;
-        case IOCONF_CAN_TYPE_S8:
-          val = (double) ((int8_t) read_value(p, 1));
-          break;
-        case IOCONF_CAN_TYPE_U16:
-          val = (double) read_value(p, 2);
-          break;
-        case IOCONF_CAN_TYPE_S16:
-          val = (double) ((int16_t) read_value(p, 2));
-          break;
-        case IOCONF_CAN_TYPE_U32:
-          val = (double) read_value(p, 4);
-          break;
-        case IOCONF_CAN_TYPE_S32:
-          val = (double) ((int32_t) read_value(p, 4));
-          break;
-        default:
-          val = 0.0;
+    for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {
+      // read value
+      if (val->type == UVRGW_CONF_CAN_TYPE_BIT) {
+        p = &rcvd_frame.data[(val->pos >> 3)];
+        f = (*p & (1 << (val->pos & 7))) ? 1.0 : 0.0;
+      } else {
+        p = &rcvd_frame.data[val->pos];
+        switch (val->type) {
+          case UVRGW_CONF_CAN_TYPE_U8:
+            f = (double) read_value(p, 1);
+            break;
+          case UVRGW_CONF_CAN_TYPE_S8:
+            f = (double) ((int8_t) read_value(p, 1));
+            break;
+          case UVRGW_CONF_CAN_TYPE_U16:
+            f = (double) read_value(p, 2);
+            break;
+          case UVRGW_CONF_CAN_TYPE_S16:
+            f = (double) ((int16_t) read_value(p, 2));
+            break;
+          case UVRGW_CONF_CAN_TYPE_U32:
+            f = (double) read_value(p, 4);
+            break;
+          case UVRGW_CONF_CAN_TYPE_S32:
+            f = (double) ((int32_t) read_value(p, 4));
+            break;
+          default:
+            f = 0.0;
+        }
+        f = f * val->scale + val->offset;
       }
-      val = val * chan->can.scale + chan->can.offset;
+
+      // dispatch value
+      uvrgw_conf_disp_val(val->disp, val, f);
     }
-
-    // write modbus
-    mb_write_chan(chan, val);
-
-    // send MQTT topic
-    mqtt_publish_chan(chan, val);
   }
 
   return 0;
 }
 
-void can_update_fds(fd_set *fd_set) {
-  FD_SET(can_fd, fd_set);
-}
-
-int can_send_chan(const IOCONF_CHAN_T *chan, double val) {
-  struct can_frame *frame, *found;
-  int i;
-  uint8_t *p;
+static int iface_task(CAN_IFACE_T *iface) {
+  CAN_FRAME_T *frame;
+  int frame_idx;
   ssize_t count;
 
-  // check for CAN output mapping
-  if (chan->can.can_id == 0 || chan->can.input) {
-    return 0;
-  }
-
-  pthread_mutex_lock(&output_buf_lock);
-
-  // search for matching frame buffer
-  for (frame = output_buf, found = NULL, i = 0; frame->can_id != 0 && i < OUTPUT_BUF_COUNT; frame++, i++) {
-    if (frame->can_id == chan->can.can_id) {
-      found = frame;
-      break;
-    }
-  }
-
-  // exit, if not found
-  if (found == NULL) {
-    pthread_mutex_unlock(&output_buf_lock);
-    return 0;
-  }
-
-  // write value
-  if (chan->can.type == IOCONF_CAN_TYPE_BIT) {
-    p = &found->data[(chan->can.pos >> 3)];
-    if (val > 0.5) {
-      *p |= 1 << (chan->can.pos & 7);
-    } else {
-      *p &= ~(1 << (chan->can.pos & 7));
-    }
-  } else {
-    val = (val - chan->can.offset) / chan->can.scale;
-    p = &found->data[chan->can.pos];
-    switch (chan->can.type) {
-      case IOCONF_CAN_TYPE_U8:
-        write_value(p, 1, (uint8_t) val_limit(val, 0.0, UINT8_MAX));
-        break;
-      case IOCONF_CAN_TYPE_S8:
-        write_value(p, 1, (int8_t) val_limit(val, INT8_MIN, INT8_MAX));
-        break;
-      case IOCONF_CAN_TYPE_U16:
-        write_value(p, 2, (uint16_t) val_limit(val, 0.0, UINT16_MAX));
-        break;
-      case IOCONF_CAN_TYPE_S16:
-        write_value(p, 2, (int16_t) val_limit(val, INT16_MIN, INT16_MAX));
-        break;
-      case IOCONF_CAN_TYPE_U32:
-        write_value(p, 4, (uint32_t) val_limit(val, 0.0, UINT32_MAX));
-        break;
-      case IOCONF_CAN_TYPE_S32:
-        write_value(p, 4, (int32_t) val_limit(val, INT32_MIN, INT32_MAX));
-        break;
-    }
-  }
-
-  if (chan->can.send) {
-    count = write(can_fd, frame, sizeof(struct can_frame));
-    if (count != sizeof(struct can_frame)) {
-      pthread_mutex_unlock(&output_buf_lock);
-      syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+  // send timestamp every 60 s
+  iface->timestamp_timer += TIMER_PERIOD_MS;
+  if (iface->timestamp_timer >= iface->timestamp_period) {
+    iface->timestamp_timer -= iface->timestamp_period;
+    if (send_timestamp(iface) < 0) {
       return -1;
     }
   }
 
-  pthread_mutex_unlock(&output_buf_lock);
+  // check for pending send frames
+  for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
+    if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_OUT)) {
+      continue;
+    }
+    if (!frame->send_pending) {
+      continue;
+    }
+
+    if (frame->send_timer < iface->send_timeout) {
+      frame->send_timer += TIMER_PERIOD_MS;
+      continue;
+    }
+    frame->send_timer = 0;
+
+    pthread_mutex_lock(&frame->send_buf_mutex);
+    frame->send_pending = false;
+
+    count = write(iface->can_fd, frame, sizeof(struct can_frame));
+    if (count != sizeof(struct can_frame)) {
+      pthread_mutex_unlock(&frame->send_buf_mutex);
+      syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+      return -1;
+    }
+
+    pthread_mutex_unlock(&frame->send_buf_mutex);
+  }
+
   return 0;
 }
 
@@ -315,7 +402,57 @@ static double val_limit(double val, double min, double max) {
   return val;
 }
 
-static int send_timestamp(void) {
+static int send_value(void *v, double f) {
+  CAN_VAL_T *val = (CAN_VAL_T *) v;
+  CAN_FRAME_T *frame = val->frame;
+  uint8_t *p;
+
+  // check for CAN output mapping
+  if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_OUT)) {
+    return 0;
+  }
+
+  pthread_mutex_lock(&frame->send_buf_mutex);
+
+  // write value
+  if (val->type == UVRGW_CONF_CAN_TYPE_BIT) {
+    p = &frame->send_buf.data[(val->pos >> 3)];
+    if (f > 0.5) {
+      *p |= 1 << (val->pos & 7);
+    } else {
+      *p &= ~(1 << (val->pos & 7));
+    }
+  } else {
+    f = (f - val->offset) / val->scale;
+    p = &frame->send_buf.data[val->pos];
+    switch (val->type) {
+      case UVRGW_CONF_CAN_TYPE_U8:
+        write_value(p, 1, (uint8_t) val_limit(f, 0.0, UINT8_MAX));
+        break;
+      case UVRGW_CONF_CAN_TYPE_S8:
+        write_value(p, 1, (int8_t) val_limit(f, INT8_MIN, INT8_MAX));
+        break;
+      case UVRGW_CONF_CAN_TYPE_U16:
+        write_value(p, 2, (uint16_t) val_limit(f, 0.0, UINT16_MAX));
+        break;
+      case UVRGW_CONF_CAN_TYPE_S16:
+        write_value(p, 2, (int16_t) val_limit(f, INT16_MIN, INT16_MAX));
+        break;
+      case UVRGW_CONF_CAN_TYPE_U32:
+        write_value(p, 4, (uint32_t) val_limit(f, 0.0, UINT32_MAX));
+        break;
+      case UVRGW_CONF_CAN_TYPE_S32:
+        write_value(p, 4, (int32_t) val_limit(f, INT32_MIN, INT32_MAX));
+        break;
+    }
+  }
+
+  frame->send_pending = true;
+  pthread_mutex_unlock(&frame->send_buf_mutex);
+  return 0;
+}
+
+static int send_timestamp(CAN_IFACE_T *iface) {
   struct timeval tv;
   struct tm lt, tmp;
   uint32_t msecs;
@@ -364,7 +501,7 @@ static int send_timestamp(void) {
   frame.data[5] = (days >> 8) & 0xff;
 
   // send frame
-  count = write(can_fd, &frame, sizeof(struct can_frame));
+  count = write(iface->can_fd, &frame, sizeof(struct can_frame));
   if (count != sizeof(struct can_frame)) {
     syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
     return -1;

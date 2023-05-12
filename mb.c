@@ -196,7 +196,7 @@ static int read_bits(int count, const IOCONF_CHAN_T *end) {
     }
 
     // send CAN
-    can_send_chan(chan, val);
+    //TODO can_send_chan(chan, val);
 
     // send MQTT topic
     mqtt_publish_chan(chan, val);
@@ -260,7 +260,7 @@ static int read_registers(int count, const IOCONF_CHAN_T *end) {
     }
 
     // send CAN
-    can_send_chan(chan, val);
+    //TODO can_send_chan(chan, val);
 
     // send MQTT topic
     mqtt_publish_chan(chan, val);

@@ -118,7 +118,7 @@ int rest_task(void) {
     val = val *chan->rest.scale + chan->rest.offset;
 
     // send CAN message
-    can_send_chan(chan, val);
+    //TODO can_send_chan(chan, val);
 
     // write MODBUS
     mb_write_chan(chan, val);

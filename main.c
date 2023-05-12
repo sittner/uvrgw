@@ -1,5 +1,6 @@
 #include <stdint.h>
 
+#include "uvrgw_conf.h"
 #include "can.h"
 #include "mb.h"
 #include "timer.h"
@@ -16,6 +17,8 @@
 #include <signal.h>
 #include <sys/timerfd.h>
 #include <sys/eventfd.h>
+
+#define DEFAULT_CFG_FILE "/etc/uvrgw.conf"
 
 static bool exit_flag;
 
@@ -37,8 +40,14 @@ static void sighandler(int sig)
 int main(int argc, char **argv)
 {
   int ret = 1;
+  const char *cfg_file;
   int err;
   struct sigaction act;
+
+  cfg_file = DEFAULT_CFG_FILE;
+  if (argc >= 2) {
+    cfg_file = argv[1];
+  }
 
   // install signal handler
   exit_flag = false;
@@ -48,24 +57,29 @@ int main(int argc, char **argv)
   sigaction(SIGTERM, &act, NULL);
   sigaction(SIGHUP, &act, NULL);
 
-  if (can_startup("can0") < 0) {
-    goto fail1;
+printf("config loading\n");
+  if (uvrgw_conf_load(cfg_file) < 0) {
+    goto fail_conf;
+  }
+printf("config ok\n");
+  if (can_startup() < 0) {
+    goto fail_can;
   }
 
   if (mb_startup("/dev/ttyAMA0", 9600) < 0) {
-    goto fail2;
-  }
-
-  if (timer_startup() < 0) {
-    goto fail3;
+    goto fail_mb;
   }
 
   if (mqtt_startup("10.0.0.2", 1883, "client123", "uvr", "K4HXOT1yKNekMV6d") < 0) {
-    goto fail4;
+    goto fail_mqtt;
   }
 
   if (rest_startup() < 0) {
-    goto fail5;
+    goto fail_rest;
+  }
+
+  if (timer_startup() < 0) {
+    goto fail_timer;
   }
 
   while(!exit_flag) {
@@ -80,34 +94,36 @@ int main(int argc, char **argv)
         continue;
       }
       syslog(LOG_ERR, "Failed on socket select (error %d)", errno);
-      goto fail6;
+      goto fail_loop;
     }
 
     // handle CAN data
     if (can_handler(&read_fd_set) < 0) {
-      goto fail6;
+      goto fail_loop;
     }
 
     // check task timers
     if (timer_handler(&read_fd_set) < 0) {
-      goto fail6;
+      goto fail_loop;
     }
 
   }
     
   ret = 0;
 
-fail6:
-  rest_shutdown();
-fail5:
-  mqtt_shutdown();
-fail4:
+fail_loop:
   timer_shutdown();
-fail3:
+fail_timer:
+  rest_shutdown();
+fail_rest:
+  mqtt_shutdown();
+fail_mqtt:
   mb_shutdown();
-fail2:
+fail_mb:
   can_shutdown();
-fail1:
+fail_can:
+  uvrgw_conf_cleanup();
+fail_conf:
   return ret;
 }
 
