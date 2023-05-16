@@ -172,10 +172,10 @@ static int conn_task(REST_CONN_T *conn) {
         f = json_object_get_boolean(json_val) ? 1.0 : 0.0;
         break;
       case json_type_int:
-        f = (double) json_object_get_int(json_val);
+        f = (double) json_object_get_int(json_val) * val->scale + val->offset;
         break;
       case json_type_double:
-        f = json_object_get_double(json_val);
+        f = json_object_get_double(json_val) * val->scale + val->offset;
         break;
       case json_type_null:
         syslog(LOG_WARNING, "Failed lookup json path '%s' for url '%s'.", val->path, conn->url);
@@ -184,9 +184,6 @@ static int conn_task(REST_CONN_T *conn) {
         syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, val->path, conn->url);
         continue;
     }
-
-    // do scaling
-    f = f *val->scale + val->offset;
 
     // dispatch value
     uvrgw_conf_disp_val(val->disp, val, f);

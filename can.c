@@ -308,11 +308,10 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
           default:
             f = 0.0;
         }
-        f = f * val->scale + val->offset;
       }
 
       // dispatch value
-      uvrgw_conf_disp_val(val->disp, val, f);
+      uvrgw_conf_disp_val(val->disp, val, f * val->scale + val->offset);
     }
   }
 
