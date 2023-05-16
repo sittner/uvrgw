@@ -3,7 +3,6 @@
 #include "mb.h"
 #include "timer.h"
 #include "ntp_check.h"
-#include "uvrgw_conf.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -160,17 +159,15 @@ void can_update_fds(fd_set *fd_set) {
 
 static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_IFACE_T *iface = (CAN_IFACE_T *) child;
-  const char *ifname;
 
-  ifname = cfg_getstr(cfg, "interface");
-  if (ifname == NULL) {
+  iface->interface = uvrgw_conf_strdup(cfg_getstr(cfg, "interface"));
+  iface->timestamp_period = cfg_getint(cfg, "timestamp_period");
+  iface->send_timeout = cfg_getint(cfg, "send_timeout");
+
+  if (iface->interface == NULL) {
     syslog(LOG_ERR, "CAN inteface name not given.");
     return -1;
   }
-
-  iface->interface = strdup(ifname);
-  iface->timestamp_period = cfg_getint(cfg, "timestamp_period");
-  iface->send_timeout = cfg_getint(cfg, "send_timeout");
 
   iface->can_fd = -1;
 
@@ -195,15 +192,13 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
 
   val->frame = (CAN_FRAME_T *) ctx;
 
-  val->name = strdup(cfg_title(cfg));
+  val->name = uvrgw_conf_strdup(cfg_title(cfg));
   val->type = cfg_getint(cfg, "type");
   val->pos = cfg_getint(cfg, "pos");
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
 
-  if (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT) {
-    val->disp = uvrgw_conf_register_val(val->name);
-  }
+  val->disp = uvrgw_conf_get_dispatcher(val->name, (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT));
 
   return 0;
 }
@@ -407,8 +402,8 @@ static int send_value(void *v, double f) {
   CAN_FRAME_T *frame = val->frame;
   uint8_t *p;
 
-  // check for CAN output mapping
-  if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_OUT)) {
+  // check for valid CAN id
+  if (frame->can_id < 0) {
     return 0;
   }
 

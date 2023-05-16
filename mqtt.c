@@ -8,104 +8,243 @@
 #include <syslog.h>
 #include <fcntl.h>
 
-#define KEEPALIVE_PERIOD 300
-
 #define CONST_STR_PAYLOAD(s) (sizeof(s) - 1), s
 
-static struct mosquitto *mosq = NULL;
+static int conns_count;
+static MQTT_CONN_T *conns;
+
+static int conn_configure(cfg_t *cfg, void *ctx, void *child);
+static int value_configure(cfg_t *cfg, void *ctx, void *child);
+static int send_value(void *v, double f);
+
+static int conn_startup(MQTT_CONN_T *conn);
+static void conn_shutdown(MQTT_CONN_T *conn);
 
 static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
-  const IOCONF_CHAN_T *chan;
+  MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
+  MQTT_VAL_T *val;
+  int val_idx;
 
-  mosquitto_publish(mosq, NULL, "uvr/status", CONST_STR_PAYLOAD("ON"), 1, true);
+  conn->connected = true;
 
-  for (chan = ioconf_tab; chan->topic != NULL; chan++) {
-    if (chan->subscribe) {
-      mosquitto_subscribe(mosq, NULL, chan->topic, 0);
+  if (conn->state_topic != NULL) {
+    mosquitto_publish(mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("ON"), conn->qos, conn->retain);
+  }
+
+  for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
+    if (val->dir == UVRGW_CONF_VAL_DIR_IN) {
+      mosquitto_subscribe(mosq, NULL, val->topic, 0);
     }
   }
 }
 
-static void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
-  const IOCONF_CHAN_T *chan;
-  char buf[32];
-  double val;
+static void disconnect_callback(struct mosquitto *mosq, void *obj, int result) {
+  MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
 
-  // search for topic
-  for (chan = ioconf_tab; ; chan++) {
-    if (chan->topic == NULL) {
-      return;
-    }
-    if (chan->subscribe && strcmp(chan->topic, msg->topic) == 0) {
-      break;
-    }
-  }
+  conn->connected = false;
+}
+
+static void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
+  MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
+  MQTT_VAL_T *val;
+  int val_idx;
+  char buf[32];
+  double f;
 
   // check vor maximum payload length
   if (msg->payloadlen >= (sizeof(buf) - 1)) {
     return;
   }
 
-  // get payload as string
-  memcpy(buf, msg->payload, msg->payloadlen);
-  buf[msg->payloadlen] = 0;
+  // search for topic
+  for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
+    if (val->dir == UVRGW_CONF_VAL_DIR_IN && strcmp(val->topic, msg->topic) == 0) {
+      // get payload as string
+      memcpy(buf, msg->payload, msg->payloadlen);
+      buf[msg->payloadlen] = 0;
 
-  val = 0.0;
-  switch (chan->type) {
-    case IOCONF_CHAN_TYPE_SWITCH:
-      if (strcmp("ON", buf) == 0) {
-        val = 1.0;
+      f = 0.0;
+      switch (val->type) {
+        case UVRGW_CONF_MQTT_TYPE_SWITCH:
+          if (strcmp("ON", buf) == 0) {
+            f = 1.0;
+          }
+          break;
+        case UVRGW_CONF_MQTT_TYPE_CONTACT:
+          if (strcmp("CLOSED", buf) == 0) {
+            f = 1.0;
+          }
+          break;
+        case UVRGW_CONF_MQTT_TYPE_NUMBER:
+          f = strtod(buf, NULL);
+          break;
       }
-      break;
-    case IOCONF_CHAN_TYPE_CONTACT:
-      if (strcmp("CLOSED", buf) == 0) {
-        val = 1.0;
-      }
-      break;
-    case IOCONF_CHAN_TYPE_NUMBER:
-      val = strtod(buf, NULL);
-      break;
+
+      // dispatch value
+      uvrgw_conf_disp_val(val->disp, val, f);
+      return;
+    }
   }
-
-  // send CAN message
-  // TODO can_send_chan(chan, val);
-
-  // write MODBUS
-  mb_write_chan(chan, val);
 }
 
-int mqtt_startup(const char *host, int port, const char *client_id, const char *username, const char *password) {
+void mqtt_init(void) {
+  conns_count = 0;
+  conns = NULL;
+}
+
+int mqtt_configure(cfg_t *cfg) {
+  return uvrgw_conf_config_childs(cfg, "mqtt", &conns_count, (void **) &conns, sizeof(MQTT_CONN_T), NULL, conn_configure);
+}
+
+static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
+  MQTT_CONN_T *conn = (MQTT_CONN_T *) child;
+
+  conn->host = uvrgw_conf_strdup(cfg_getstr(cfg, "host"));
+  conn->port = cfg_getint(cfg, "port");
+  conn->client_id = uvrgw_conf_strdup(cfg_getstr(cfg, "client_id"));
+  conn->user = uvrgw_conf_strdup(cfg_getstr(cfg, "user"));
+  conn->pwd = uvrgw_conf_strdup(cfg_getstr(cfg, "pwd"));
+  conn->state_topic = uvrgw_conf_strdup(cfg_getstr(cfg, "state_topic"));
+  conn->keepalive_period = cfg_getint(cfg, "keepalive_period");
+  conn->qos = cfg_getint(cfg, "qos");
+  conn->retain = cfg_getbool(cfg, "retain");
+
+  if (conn->host == NULL) {
+    syslog(LOG_ERR, "mqtt host name not given.");
+    return -1;
+  }
+
+  return uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(MQTT_VAL_T), conn, value_configure);
+}
+
+static int value_configure(cfg_t *cfg, void *ctx, void *child) {
+  MQTT_VAL_T *val = (MQTT_VAL_T *) child;
+
+  val->conn = (MQTT_CONN_T *) ctx;
+
+  val->name = uvrgw_conf_strdup(cfg_title(cfg));
+  val->dir = cfg_getint(cfg, "dir");
+  val->type = cfg_getint(cfg, "type");
+  val->topic = uvrgw_conf_strdup(cfg_getstr(cfg, "topic"));
+  val->fmt = uvrgw_conf_strdup(cfg_getstr(cfg, "fmt"));
+
+  if (cfg_size(cfg, "qos") > 0) {
+    val->qos = cfg_getint(cfg, "qos");
+  } else {
+    val->qos = val->conn->qos;
+  }
+
+  if (cfg_size(cfg, "retain") > 0) {
+    val->retain = cfg_getbool(cfg, "retain");
+  } else {
+    val->retain = val->conn->retain;
+  }
+
+  if (val->topic == NULL) {
+    syslog(LOG_ERR, "mqtt value topic not given.");
+    return -1;
+  }
+
+  if (val->type == UVRGW_CONF_MQTT_TYPE_NUMBER && val->fmt == NULL) {
+    syslog(LOG_ERR, "mqtt value fmt not given.");
+    return -1;
+  }
+
+  val->disp = uvrgw_conf_get_dispatcher(val->name, (val->dir == UVRGW_CONF_VAL_DIR_OUT));
+
+  return 0;
+}
+
+void mqtt_register_disp_cbs(void) {
+  MQTT_CONN_T *conn;
+  int conn_idx;
+  MQTT_VAL_T *val;
+  int val_idx;
+
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
+      if (val->dir == UVRGW_CONF_VAL_DIR_OUT) {
+        uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+      }
+    }
+  }
+}
+
+void mqtt_unconfigure(void) {
+  MQTT_CONN_T *conn;
+  int conn_idx;
+  MQTT_VAL_T *val;
+  int val_idx;
+
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
+      free((void *) val->name);
+      free((void *) val->topic);
+      free((void *) val->fmt);
+    }
+    free((void *) conn->host);
+    free((void *) conn->client_id);
+    free((void *) conn->user);
+    free((void *) conn->pwd);
+    free((void *) conn->state_topic);
+    free(conn->values);
+  }
+  free(conns);
+}
+
+int mqtt_startup(void) {
+  MQTT_CONN_T *conn;
+  int conn_idx;
+
   if (mosquitto_lib_init()) {
     syslog(LOG_ERR, "Failed to init mosquitto lib");
     goto fail0;
   }
 
-  mosq = mosquitto_new(client_id, true, NULL);
-  if (mosq == NULL) {
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    if (conn_startup(conn) < 0) {
+      goto fail1;
+    }
+  }
+
+  return 0;
+
+fail1:
+  mqtt_shutdown();
+fail0:
+  return -1;
+}
+
+static int conn_startup(MQTT_CONN_T *conn) {
+  conn->mosq = mosquitto_new(conn->client_id, true, conn);
+  if (conn->mosq == NULL) {
     syslog(LOG_ERR, "Failed to create mosquitto instance");
     goto fail1;
   }
 
-  if (username != NULL) {
-    if (mosquitto_username_pw_set(mosq, username, password)) {
+  if (conn->user != NULL && conn->pwd != NULL) {
+    if (mosquitto_username_pw_set(conn->mosq, conn->user, conn->pwd)) {
       syslog(LOG_ERR, "Failed to set mosquitto credentials");
       goto fail2;
     }
   }
 
-  mosquitto_connect_callback_set(mosq, connect_callback);
-  mosquitto_message_callback_set(mosq, message_callback);
+  mosquitto_connect_callback_set(conn->mosq, connect_callback);
+  mosquitto_disconnect_callback_set(conn->mosq, disconnect_callback);
+  mosquitto_message_callback_set(conn->mosq, message_callback);
 
-  if (mosquitto_will_set(mosq, "uvr/status", CONST_STR_PAYLOAD("OFF"), 1, true)) {
-    syslog(LOG_ERR, "Failed to set mosquitto will");
-    goto fail2;
+  if (conn->state_topic != NULL) {
+    if (mosquitto_will_set(conn->mosq, conn->state_topic, CONST_STR_PAYLOAD("OFF"), conn->qos, conn->retain)) {
+      syslog(LOG_ERR, "Failed to set mosquitto will");
+      goto fail2;
+    }
   }
 
-  if (mosquitto_connect_async(mosq, host, port, KEEPALIVE_PERIOD)) {
+  if (mosquitto_connect_async(conn->mosq, conn->host, conn->port, conn->keepalive_period)) {
     syslog(LOG_INFO, "initial mqtt connection failed");
   }
 
-  if (mosquitto_loop_start(mosq)) {
+  if (mosquitto_loop_start(conn->mosq)) {
     syslog(LOG_ERR, "Failed to start mosquitto thread");
     goto fail3;
   }
@@ -113,51 +252,80 @@ int mqtt_startup(const char *host, int port, const char *client_id, const char *
   return 0;
 
 fail3:
-  mosquitto_disconnect(mosq);
+  mosquitto_disconnect(conn->mosq);
 fail2:
-  mosquitto_destroy(mosq);
+  mosquitto_destroy(conn->mosq);
+  conn->mosq = NULL;
 fail1:
-  mosquitto_lib_cleanup();
-fail0:
   return -1;
 }
 
 void mqtt_shutdown(void) {
-  mosquitto_publish(mosq, NULL, "uvr/status", CONST_STR_PAYLOAD("OFF"), 1, true);
-  mosquitto_disconnect(mosq);
-  mosquitto_loop_stop(mosq, false);
-  mosquitto_destroy(mosq);
+  MQTT_CONN_T *conn;
+  int conn_idx;
+
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    conn_shutdown(conn);
+  }
+
   mosquitto_lib_cleanup();
 }
 
-int mqtt_publish_chan(const IOCONF_CHAN_T *chan, double val) {
+static void conn_shutdown(MQTT_CONN_T *conn) {
+  if (conn->mosq != NULL) {
+    if (conn->connected) {
+      if (conn->state_topic != NULL) {
+        mosquitto_publish(conn->mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("OFF"), conn->qos, conn->retain);
+      }
+      mosquitto_disconnect(conn->mosq);
+    }
+    mosquitto_loop_stop(conn->mosq, false);
+    mosquitto_destroy(conn->mosq);
+  }
+}
+
+static int send_value(void *v, double f) {
+  MQTT_VAL_T *val = (MQTT_VAL_T *) v;
+  MQTT_CONN_T *conn = val->conn;
   char buf[32];
   int len;
+  int err;
 
-  switch (chan->type) {
-    case IOCONF_CHAN_TYPE_SWITCH:
-      if (val >= 0.5) {
-        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("ON"), 1, true);
+  switch (val->type) {
+    case UVRGW_CONF_MQTT_TYPE_SWITCH:
+      if (f >= 0.5) {
+        err = mosquitto_publish(conn->mosq, NULL, val->topic, CONST_STR_PAYLOAD("ON"), val->qos, val->retain);
       } else {
-        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("OFF"), 1, true);
+        err = mosquitto_publish(conn->mosq, NULL, val->topic, CONST_STR_PAYLOAD("OFF"), val->qos, val->retain);
       }
+      break;
 
-    case IOCONF_CHAN_TYPE_CONTACT:
-      if (val >= 0.5) {
-        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("CLOSED"), 1, true);
+    case UVRGW_CONF_MQTT_TYPE_CONTACT:
+      if (f >= 0.5) {
+        err = mosquitto_publish(conn->mosq, NULL, val->topic, CONST_STR_PAYLOAD("CLOSED"), val->qos, val->retain);
       } else {
-        return mosquitto_publish(mosq, NULL, chan->topic, CONST_STR_PAYLOAD("OPEN"), 1, true);
+        err = mosquitto_publish(conn->mosq, NULL, val->topic, CONST_STR_PAYLOAD("OPEN"), val->qos, val->retain);
       }
+      break;
 
-    case IOCONF_CHAN_TYPE_NUMBER:
-      len = snprintf(buf, sizeof(buf), chan->fmt, val);
+    case UVRGW_CONF_MQTT_TYPE_NUMBER:
+      len = snprintf(buf, sizeof(buf), val->fmt, f);
       if (len > sizeof(buf)) {
-        return MOSQ_ERR_PAYLOAD_SIZE;
+        err = MOSQ_ERR_PAYLOAD_SIZE;
+      } else {
+        err = mosquitto_publish(conn->mosq, NULL, val->topic, len, buf, val->qos, val->retain);
       }
+      break;
 
-      return mosquitto_publish(mosq, NULL, chan->topic, len, buf, 1, true);
+    default:
+      err = MOSQ_ERR_UNKNOWN;
   }
 
-  return MOSQ_ERR_UNKNOWN;
+  if (err != MOSQ_ERR_SUCCESS) {
+    syslog(LOG_ERR, "mqtt error %d on send.", err);
+    return -1;
+  }
+
+  return 0;
 }
 

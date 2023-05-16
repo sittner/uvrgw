@@ -1,7 +1,6 @@
 #ifndef _CAN_H_
 #define _CAN_H_
 
-#include "ioconf.h"
 #include "uvrgw_conf.h"
 
 #include <stdbool.h>
@@ -31,7 +30,7 @@ typedef struct CAN_FRAME {
   int dir;
 
   int values_count;
-  CAN_VAL_T *values;
+  struct CAN_VAL *values;
 
   struct CAN_IFACE *iface;
 
@@ -47,7 +46,7 @@ typedef struct CAN_IFACE {
   int send_timeout;
 
   int frames_count;
-  CAN_FRAME_T *frames;
+  struct CAN_FRAME *frames;
 
   int can_fd;
   int timestamp_timer;

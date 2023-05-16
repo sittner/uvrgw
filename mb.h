@@ -1,7 +1,7 @@
 #ifndef _MB_H_
 #define _MB_H_
 
-#include "ioconf.h"
+#include "uvrgw_conf.h"
 
 #include <modbus/modbus.h>
 #include <pthread.h>
@@ -14,29 +14,46 @@ struct MB_RTU_MASTER;
 typedef struct MB_RTU_SLAVE_VAL {
   const char *name;
   int dir;
+  int regtype;
   int addr;
   int type;
-  int regtype;
   int pos;
   double scale;
   double offset;
 
+  struct MB_RTU_SLAVE *slave;
+
   struct MB_RTU_SLAVE_VAL *prev;
   struct MB_RTU_SLAVE_VAL *next;
+  struct MB_RTU_SLAVE_VAL *same_reg;
+
+  struct MB_RTU_SLAVE_VAL *in_group_same;
+  struct MB_RTU_SLAVE_VAL *in_group_next;
+  int in_group_count;
+  int in_group_index;
+
+  UVRGW_CONF_VAL_DISPATCH_T *disp;
+
 } MB_RTU_SLAVE_VAL_T;
 
 typedef struct MB_RTU_SLAVE {
   int id;
   int interval;
-  bool many_req;
+  int max_req_regs;
+
+  struct MB_RTU_MASTER *master;
 
   int values_count;
-  MB_RTU_SLAVE_VAL_T *values;
+  struct MB_RTU_SLAVE_VAL *values;
 
-  MB_RTU_SLAVE_VAL_T *values_head;
-  MB_RTU_SLAVE_VAL_T *values_tail;
+  struct MB_RTU_SLAVE_VAL *values_head;
+  struct MB_RTU_SLAVE_VAL *values_tail;
+
+  struct MB_RTU_SLAVE_VAL *in_group_head;
+  struct MB_RTU_SLAVE_VAL *value_in_curr;
 
   int poll_timer;
+  void *input_buf;
 } MB_RTU_SLAVE_T;
 
 typedef struct MB_RTU_MASTER {
@@ -51,17 +68,21 @@ typedef struct MB_RTU_MASTER {
   int rts_delay;
 
   int slaves_count;
-  MB_RTU_SLAVE_T *slaves;
+  struct MB_RTU_SLAVE *slaves;
 
   modbus_t *ctx;
   pthread_mutex_t bus_lock;
 } MB_RTU_MASTER_T;
 
-int mb_startup(const char *dev, int baud);
-void mb_shutdown(void);
-int mb_task(void);
+void mb_init(void);
+int mb_configure(cfg_t *cfg);
+void mb_register_disp_cbs(void);
+void mb_unconfigure(void);
 
-int mb_write_chan(const IOCONF_CHAN_T *chan, double val);
+int mb_startup(void);
+void mb_shutdown(void);
+
+int mb_task(void);
 
 #endif
 

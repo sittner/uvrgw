@@ -66,11 +66,11 @@ printf("config ok\n");
     goto fail_can;
   }
 
-  if (mb_startup("/dev/ttyAMA0", 9600) < 0) {
+  if (mb_startup() < 0) {
     goto fail_mb;
   }
 
-  if (mqtt_startup("10.0.0.2", 1883, "client123", "uvr", "K4HXOT1yKNekMV6d") < 0) {
+  if (mqtt_startup() < 0) {
     goto fail_mqtt;
   }
 

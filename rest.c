@@ -18,7 +18,13 @@ typedef struct {
   json_object *json;
 } REST_GET_STATE_T;
 
-static int poll_timer;
+static int conns_count;
+static REST_CONN_T *conns;
+
+static int conn_configure(cfg_t *cfg, void *ctx, void *child);
+static int value_configure(cfg_t *cfg, void *ctx, void *child);
+
+static int conn_task(REST_CONN_T *conn);
 
 static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout);
 static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb, void *userp);
@@ -38,14 +44,77 @@ static int parse_index(const char *s) {
   return atoi(s);
 }
 
+void rest_init(void) {
+  conns_count = 0;
+  conns = NULL;
+}
+
+int rest_configure(cfg_t *cfg) {
+  return uvrgw_conf_config_childs(cfg, "json", &conns_count, (void **) &conns, sizeof(REST_CONN_T), NULL, conn_configure);
+}
+
+static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
+  REST_CONN_T *conn = (REST_CONN_T *) child;
+
+  conn->url = uvrgw_conf_strdup(cfg_getstr(cfg, "url"));
+  conn->interval = cfg_getint(cfg, "interval");
+  conn->timeout = cfg_getint(cfg, "timeout");
+  conn->user = uvrgw_conf_strdup(cfg_getstr(cfg, "user"));
+  conn->pwd = uvrgw_conf_strdup(cfg_getstr(cfg, "pwd"));
+
+  if (conn->url == NULL) {
+    syslog(LOG_ERR, "json url name not given.");
+    return -1;
+  }
+
+  return uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(REST_VAL_T), conn, value_configure);
+}
+
+static int value_configure(cfg_t *cfg, void *ctx, void *child) {
+  REST_VAL_T *val = (REST_VAL_T *) child;
+
+  val->conn = (REST_CONN_T *) ctx;
+
+  val->name = uvrgw_conf_strdup(cfg_title(cfg));
+  val->path = uvrgw_conf_strdup(cfg_getstr(cfg, "path"));
+  val->scale = cfg_getfloat(cfg, "scale");
+  val->offset = cfg_getfloat(cfg, "offset");
+
+  if (val->path == NULL) {
+    syslog(LOG_ERR, "json value path not given.");
+    return -1;
+  }
+
+  val->disp = uvrgw_conf_get_dispatcher(val->name, false);
+
+  return 0;
+}
+
+void rest_unconfigure(void) {
+  REST_CONN_T *conn;
+  int conn_idx;
+  REST_VAL_T *val;
+  int val_idx;
+
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
+      free((void *) val->name);
+      free((void *) val->path);
+    }
+    free((void *) conn->url);
+    free((void *) conn->user);
+    free((void *) conn->pwd);
+    free(conn->values);
+  }
+  free(conns);
+}
+
 int rest_startup(void) {
   // initialize libcurl
   if (curl_global_init(CURL_GLOBAL_ALL)) {
     syslog(LOG_ERR, "Failed to initialize libcurl.");
     goto fail0;
   }
-
-  poll_timer = 0;
 
   return 0;
 
@@ -59,72 +128,68 @@ void rest_shutdown(void) {
 }
 
 int rest_task(void) {
-  const IOCONF_CHAN_T *chan;
-  const char *url;
+  REST_CONN_T *conn;
+  int conn_idx;
+
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    if (conn_task(conn) < 0) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+static int conn_task(REST_CONN_T *conn) {
+  REST_VAL_T *val;
+  int val_idx;
   json_object *json;
   json_object *json_val;
   enum json_type type;
-  double val;
+  double f;
 
   // check poll period
-  poll_timer += TIMER_PERIOD_MS;
-  if (poll_timer < REST_POLL_PERIOD_MS) {
+  conn->poll_timer += TIMER_PERIOD_MS;
+  if (conn->poll_timer < conn->interval) {
     return 0;
   }
-  poll_timer -= REST_POLL_PERIOD_MS;
+  conn->poll_timer -=  conn->interval;
 
-  // process items
-  for (url = NULL, json = NULL, chan = ioconf_tab; chan->topic != NULL ; chan++) {
-    //skip items without rest config
-    if (chan->rest.url == NULL || chan->rest.path == NULL) {
-      continue;
-    }
+  // load json from server
+  json = rest_get_json(conn->url, conn->user, conn->pwd, conn->timeout);
+  if (json == NULL) {
+    return 0;
+  }
 
-    // new url -> execute a get
-    if (url == NULL || strcmp(chan->rest.url, url) != 0) {
-      url = chan->rest.url;
-      json_object_put(json);
-      json = rest_get_json(url, chan->rest.user, chan->rest.pwd, REST_POLL_TIMEOUT_SEC);
-    }
-
-    // no valid json -> skip item
-    if (json == NULL) {
-      continue;
-    }
-
+  // process values
+  for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
     // lookup path, skip if not found
     // convert value to double, if found
-    json_val = json_path_lookup(json, chan->rest.path);
+    json_val = json_path_lookup(json, val->path);
     type = json_object_get_type(json_val);
     switch (type) {
       case json_type_boolean:
-        val = json_object_get_boolean(json_val) ? 1.0 : 0.0;
+        f = json_object_get_boolean(json_val) ? 1.0 : 0.0;
         break;
       case json_type_int:
-        val = (double) json_object_get_int(json_val);
+        f = (double) json_object_get_int(json_val);
         break;
       case json_type_double:
-        val = json_object_get_double(json_val);
+        f = json_object_get_double(json_val);
         break;
       case json_type_null:
-        syslog(LOG_WARNING, "Failed lookup json path '%s' for url '%s'.", chan->rest.path, chan->rest.url);
+        syslog(LOG_WARNING, "Failed lookup json path '%s' for url '%s'.", val->path, conn->url);
         continue;
       default:
-        syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, chan->rest.path, chan->rest.url);
+        syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, val->path, conn->url);
         continue;
     }
 
     // do scaling
-    val = val *chan->rest.scale + chan->rest.offset;
+    f = f *val->scale + val->offset;
 
-    // send CAN message
-    //TODO can_send_chan(chan, val);
-
-    // write MODBUS
-    mb_write_chan(chan, val);
-
-    // send MQTT topic
-    mqtt_publish_chan(chan, val);
+    // dispatch value
+    uvrgw_conf_disp_val(val->disp, val, f);
   }
 
   json_object_put(json);
@@ -170,7 +235,7 @@ static json_object *rest_get_json(const char *url, const char *user, const char 
   }
 
   // set timeout
-  curl_easy_setopt(ch, CURLOPT_TIMEOUT, timeout);
+  curl_easy_setopt(ch, CURLOPT_TIMEOUT_MS, timeout);
 
   // set calback function
   curl_easy_setopt(ch, CURLOPT_WRITEFUNCTION, rest_get_json_callback);

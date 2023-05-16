@@ -1,6 +1,9 @@
 #include <uvrgw_conf.h>
 
 #include "can.h"
+#include "mb.h"
+#include "mqtt.h"
+#include "rest.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -30,8 +33,8 @@ static cfg_opt_t mqtt_val_opts[] = {
   CFG_INT_CB("type", -1, CFGF_NONE, parse_mqtt_val_type),
   CFG_STR("topic", NULL, CFGF_NONE),
   CFG_STR("fmt", NULL, CFGF_NONE),
-  CFG_INT("qos", 0, CFGF_NONE),
-  CFG_BOOL("retain", cfg_false, CFGF_NONE),
+  CFG_INT("qos", 0, CFGF_NODEFAULT),
+  CFG_BOOL("retain", cfg_false, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -42,6 +45,7 @@ static cfg_opt_t mqtt_opts[] = {
   CFG_STR("user", NULL, CFGF_NONE),
   CFG_STR("pwd", NULL, CFGF_NONE),
   CFG_STR("state_topic", NULL, CFGF_NONE),
+  CFG_INT("keepalive_period", 300, CFGF_NONE),
   CFG_INT("qos", 0, CFGF_NONE),
   CFG_BOOL("retain", cfg_false, CFGF_NONE),
   CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE),
@@ -57,7 +61,8 @@ static cfg_opt_t json_val_opts[] = {
 
 static cfg_opt_t json_opts[] = {
   CFG_STR("url", NULL, CFGF_NONE),
-  CFG_INT("interval", 0, CFGF_NONE),
+  CFG_INT("interval", 10000, CFGF_NONE),
+  CFG_INT("timeout", 3000, CFGF_NONE),
   CFG_STR("user", NULL, CFGF_NONE),
   CFG_STR("pwd", NULL, CFGF_NONE),
   CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
@@ -89,9 +94,9 @@ static cfg_opt_t can_opts[] = {
 
 static cfg_opt_t mb_slave_val_opts[] = {
   CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
+  CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
   CFG_INT("addr", -1, CFGF_NONE),
   CFG_INT_CB("type", -1, CFGF_NONE, parse_mb_val_type),
-  CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
   CFG_INT("pos", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
@@ -101,7 +106,7 @@ static cfg_opt_t mb_slave_val_opts[] = {
 static cfg_opt_t mb_rtu_slave_opts[] = {
   CFG_INT("id", -1, CFGF_NONE),
   CFG_INT("interval", 0, CFGF_NONE),
-  CFG_BOOL("many_req", cfg_false, CFGF_NONE),
+  CFG_INT("max_req_regs", 32, CFGF_NONE),
   CFG_SEC("value", mb_slave_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -308,13 +313,30 @@ int uvrgw_conf_load(const char *file) {
 
   disp = NULL;
   can_init();
+  mb_init();
+  mqtt_init();
+  rest_init();
 
   if (can_configure(cfg)) {
     goto fail2;
   }
 
+  if (mb_configure(cfg)) {
+    goto fail2;
+  }
+
+  if (mqtt_configure(cfg)) {
+    goto fail2;
+  }
+
+  if (rest_configure(cfg)) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
+  mb_register_disp_cbs();
+  mqtt_register_disp_cbs();
 
   cfg_free(cfg);
   return 0;
@@ -332,6 +354,7 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
   can_unconfigure();
+  mb_unconfigure();
 
   dp = disp;
   while (dp != NULL) {
@@ -373,7 +396,15 @@ int uvrgw_conf_config_childs(cfg_t *cfg, const char *name, int *count, void **da
   return 0;
 }
 
-UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_register_val(const char *name) {
+char *uvrgw_conf_strdup(const char *s) {
+  if (s == NULL) {
+    return NULL;
+  }
+
+  return strdup(s);
+}
+
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool alloc_cb) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *last;
 
@@ -389,7 +420,7 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_register_val(const char *name) {
 
   if (dp == NULL) {
     dp = calloc(1, sizeof(UVRGW_CONF_VAL_DISPATCH_T));
-    dp->name = strdup(name);
+    dp->name = uvrgw_conf_strdup(name);
   }
 
   if (last == NULL) {
@@ -398,7 +429,10 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_register_val(const char *name) {
     last->next = dp;
   }
 
-  dp->value_count++;
+  if (alloc_cb) {
+    dp->value_count++;
+  }
+
   return dp;
 }
 

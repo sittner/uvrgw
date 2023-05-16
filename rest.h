@@ -1,29 +1,39 @@
 #ifndef _REST_H_
 #define _REST_H_
 
-#include <ioconf.h>
+#include "uvrgw_conf.h"
 
-#define REST_POLL_PERIOD_MS   10000
-#define REST_POLL_TIMEOUT_SEC 3
+struct REST_VAL;
+struct REST_CONN;
 
-typedef struct {
+typedef struct REST_VAL {
   const char *name;
   const char *path;
   double scale;
   double offset;
+
+  struct REST_CONN *conn;
+
+  UVRGW_CONF_VAL_DISPATCH_T *disp;
+
 } REST_VAL_T;
 
-typedef struct {
+typedef struct REST_CONN {
   const char *url;
   int interval;
+  int timeout;
   const char *user;
   const char *pwd;
 
   int values_count;
-  REST_VAL_T *values;
+  struct REST_VAL *values;
 
   int poll_timer;
 } REST_CONN_T;
+
+void rest_init(void);
+int rest_configure(cfg_t *cfg);
+void rest_unconfigure(void);
 
 int rest_startup(void);
 void rest_shutdown(void);

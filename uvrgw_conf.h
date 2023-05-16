@@ -2,6 +2,7 @@
 #define _UVRGW_CONF_H_
 
 #include <confuse.h>
+#include <stdbool.h>
 
 #define UVRGW_CONF_VAL_DIR_IN  0
 #define UVRGW_CONF_VAL_DIR_OUT 1
@@ -36,7 +37,7 @@ typedef int (* UVRGW_CONF_CONFIG_CHILD_CB)(cfg_t *cfg, void *ctx, void *child);
 
 typedef int (* UVRGW_CONF_DISPATCH_CB)(void *v, double f);
 
-typedef struct {
+typedef struct UVRGW_CONF_DISPATCH_CB_VAL {
   void *val;
   UVRGW_CONF_DISPATCH_CB cb;
 } UVRGW_CONF_DISPATCH_CB_VAL_T;
@@ -49,7 +50,7 @@ typedef struct UVRGW_CONF_VAL_DISPATCH {
   struct UVRGW_CONF_VAL_DISPATCH *next;
 
   int value_cbs_pos;
-  UVRGW_CONF_DISPATCH_CB_VAL_T *value_cbs;
+  struct UVRGW_CONF_DISPATCH_CB_VAL *value_cbs;
 } UVRGW_CONF_VAL_DISPATCH_T;
 
 int uvrgw_conf_load(const char *file);
@@ -57,7 +58,9 @@ void uvrgw_conf_cleanup(void);
 
 int uvrgw_conf_config_childs(cfg_t *cfg, const char *name, int *count, void **data, int size, void *ctx, UVRGW_CONF_CONFIG_CHILD_CB cccb);
 
-UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_register_val(const char *name);
+char *uvrgw_conf_strdup(const char *s);
+
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool alloc_cb);
 int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_CONF_DISPATCH_CB cb);
 void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f);
 

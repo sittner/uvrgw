@@ -1,13 +1,16 @@
 #ifndef _MQTT_H_
 #define _MQTT_H_
 
-#include <ioconf.h>
+#include "uvrgw_conf.h"
 
 #include <stdbool.h>
 #include <sys/select.h>
 #include <mosquitto.h>
 
-typedef struct {
+struct MQTT_VAL;
+struct MQTT_CONN;
+
+typedef struct MQTT_VAL {
   const char *name;
   int dir;
   int type;
@@ -15,28 +18,39 @@ typedef struct {
   const char *fmt;
   int qos;
   bool retain;
+
+  struct MQTT_CONN *conn;
+
+  UVRGW_CONF_VAL_DISPATCH_T *disp;
+
 } MQTT_VAL_T;
 
-typedef struct {
+typedef struct MQTT_CONN {
   const char *host;
   int port;
   const char *client_id;
   const char *user;
   const char *pwd;
   const char *state_topic;
+  int keepalive_period;
   int qos;
   bool retain;
 
   int values_count;
-  MQTT_VAL_T *values;
+  struct MQTT_VAL *values;
 
   struct mosquitto *mosq;
+
+  bool connected;
 } MQTT_CONN_T;
 
-int mqtt_startup(const char *host, int port, const char *client_id, const char *username, const char *password);
-void mqtt_shutdown(void);
+void mqtt_init(void);
+int mqtt_configure(cfg_t *cfg);
+void mqtt_register_disp_cbs(void);
+void mqtt_unconfigure(void);
 
-int mqtt_publish_chan(const IOCONF_CHAN_T *chan, double val);
+int mqtt_startup(void);
+void mqtt_shutdown(void);
 
 #endif
 
