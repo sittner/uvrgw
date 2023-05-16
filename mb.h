@@ -6,6 +6,7 @@
 #include <modbus/modbus.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 struct MB_RTU_SLAVE_VAL;
 struct MB_RTU_SLAVE;
@@ -26,6 +27,7 @@ typedef struct MB_RTU_SLAVE_VAL {
   struct MB_RTU_SLAVE_VAL *prev;
   struct MB_RTU_SLAVE_VAL *next;
   struct MB_RTU_SLAVE_VAL *same_reg;
+  struct MB_RTU_SLAVE_VAL *same_base;
 
   struct MB_RTU_SLAVE_VAL *in_group_same;
   struct MB_RTU_SLAVE_VAL *in_group_next;
@@ -33,6 +35,7 @@ typedef struct MB_RTU_SLAVE_VAL {
   int in_group_index;
 
   UVRGW_CONF_VAL_DISPATCH_T *disp;
+  uint16_t valbuf;
 
 } MB_RTU_SLAVE_VAL_T;
 

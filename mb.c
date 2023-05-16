@@ -18,8 +18,6 @@
 #include <linux/can/raw.h>
 #include <pthread.h>
 
-#define RESPONSE_TIMEOUT_MS 200
-
 static int masters_count;
 static MB_RTU_MASTER_T *masters;
 
@@ -129,10 +127,12 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
 
     // check for same reg
     if (res == 0) {
+      val->same_base = cmp;
       val->same_reg = cmp->same_reg;
       cmp->same_reg = val;
       continue;
     }
+    val->same_base = val;
 
     // insert into ordered list
     if (cmp != NULL) {
@@ -469,6 +469,7 @@ static int send_value(void *v, double f) {
   MB_RTU_SLAVE_VAL_T *val = (MB_RTU_SLAVE_VAL_T *) v;
   MB_RTU_SLAVE_T *slave = val->slave;
   MB_RTU_MASTER_T *master = slave->master;
+  uint16_t *buf;
   int ret;
 
   // input registers are read only
@@ -495,13 +496,23 @@ static int send_value(void *v, double f) {
   if (val->type == UVRGW_CONF_MB_TYPE_BIT) {
     ret = modbus_write_bit(master->ctx, val->addr, (f > 0.5));
   } else {
-    f = (f - val->offset) / val->scale;
     switch (val->type) {
       case UVRGW_CONF_MB_TYPE_SIGNED:
+        f = (f - val->offset) / val->scale;
         ret = modbus_write_register(master->ctx, val->addr, (int16_t) val_limit(f, INT16_MIN, INT16_MAX));
         break;
       case UVRGW_CONF_MB_TYPE_UNSIGNED:
+        f = (f - val->offset) / val->scale;
         ret = modbus_write_register(master->ctx, val->addr, (uint16_t) val_limit(f, 0.0, UINT16_MAX));
+        break;
+      case UVRGW_CONF_MB_TYPE_BITMASK:
+        buf = &val->same_base->valbuf;
+        if (f > 0.5) {
+          *buf |= (1 << val->pos);
+        } else {
+          *buf &= ~(1 << val->pos);
+        }
+        ret = modbus_write_register(master->ctx, val->addr, *buf);
         break;
     }
   }
