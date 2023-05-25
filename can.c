@@ -182,6 +182,8 @@ static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
   frame->can_id = cfg_getint(cfg, "can_id");
   frame->dir = cfg_getint(cfg, "dir");
 
+  frame->send_buf.can_id = frame->can_id;
+  frame->send_buf.can_dlc = 8;
   pthread_mutex_init(&frame->send_buf_mutex, NULL);
 
   return uvrgw_conf_config_childs(cfg, "value", &frame->values_count, (void **) &frame->values, sizeof(CAN_VAL_T), frame, value_configure);
@@ -352,7 +354,7 @@ static int iface_task(CAN_IFACE_T *iface) {
     pthread_mutex_lock(&frame->send_buf_mutex);
     frame->send_pending = false;
 
-    count = write(iface->can_fd, frame, sizeof(struct can_frame));
+    count = write(iface->can_fd, &(frame->send_buf), sizeof(struct can_frame));
     if (count != sizeof(struct can_frame)) {
       pthread_mutex_unlock(&frame->send_buf_mutex);
       syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
