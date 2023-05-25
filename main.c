@@ -57,11 +57,10 @@ int main(int argc, char **argv)
   sigaction(SIGTERM, &act, NULL);
   sigaction(SIGHUP, &act, NULL);
 
-printf("config loading\n");
   if (uvrgw_conf_load(cfg_file) < 0) {
     goto fail_conf;
   }
-printf("config ok\n");
+
   if (can_startup() < 0) {
     goto fail_can;
   }
