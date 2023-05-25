@@ -323,12 +323,14 @@ static int iface_task(CAN_IFACE_T *iface) {
   int frame_idx;
   ssize_t count;
 
-  // send timestamp every 60 s
-  iface->timestamp_timer += TIMER_PERIOD_MS;
-  if (iface->timestamp_timer >= iface->timestamp_period) {
-    iface->timestamp_timer -= iface->timestamp_period;
-    if (send_timestamp(iface) < 0) {
-      return -1;
+  // send timestamp
+  if (iface->timestamp_period > 0) {
+    iface->timestamp_timer += TIMER_PERIOD_MS;
+    if (iface->timestamp_timer >= iface->timestamp_period) {
+      iface->timestamp_timer -= iface->timestamp_period;
+      if (send_timestamp(iface) < 0) {
+        return -1;
+      }
     }
   }
 
