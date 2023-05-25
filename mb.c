@@ -336,7 +336,6 @@ int mb_task(void) {
 
 static int slave_task(MB_RTU_SLAVE_T *slave) {
   MB_RTU_SLAVE_VAL_T *grp;
-  int ret;
 
   // check, if we have at last one item found
   if (slave->in_group_head == NULL) {
@@ -355,13 +354,14 @@ static int slave_task(MB_RTU_SLAVE_T *slave) {
 
   // read registers
   grp = slave->value_in_curr;
-  if (grp->type == UVRGW_CONF_MB_REG_TYPE_INBIT || grp->type == UVRGW_CONF_MB_REG_TYPE_BIT) {
-    ret = read_bits(grp);
+  if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || grp->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
+    if (read_bits(grp) < 0) {
+      syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d)", slave->id, grp->addr, grp->in_group_count);
+    }
   } else {
-    ret = read_registers(grp);
-  }
-  if (ret < 0) {
-    syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d)", slave->id, grp->addr, grp->in_group_count);
+    if (read_registers(grp) < 0) {
+      syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d)", slave->id, grp->addr, grp->in_group_count);
+    }
   }
 
   slave->value_in_curr = grp->in_group_next;
@@ -387,7 +387,7 @@ static int read_bits(MB_RTU_SLAVE_VAL_T *grp) {
     return ret;
   }
 
-  if (grp->type == UVRGW_CONF_MB_REG_TYPE_INBIT) {
+  if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT) {
     ret = modbus_read_input_bits(master->ctx, grp->addr, grp->in_group_count, buf);
   } else {
     ret = modbus_read_bits(master->ctx, grp->addr, grp->in_group_count, buf);
@@ -432,7 +432,7 @@ static int read_registers(MB_RTU_SLAVE_VAL_T *grp) {
     return ret;
   }
 
-  if (grp->type == UVRGW_CONF_MB_REG_TYPE_INREG) {
+  if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
     ret = modbus_read_input_registers(master->ctx, grp->addr, grp->in_group_count, buf);
   } else {
     ret = modbus_read_registers(master->ctx, grp->addr, grp->in_group_count, buf);
