@@ -32,16 +32,19 @@ static json_object *json_path_lookup(json_object *root, const char *path);
 static json_object *json_path_lookup_recursive(json_object *root, char *path);
 
 static int parse_index(const char *s) {
-  const char *p;
+  char *p;
+  int val;
 
-  // allow numbers only
-  for (p = s; isdigit(*p); p++);
+  val = (int)strtol(s, &p, 10);
   if (*p != 0) {
     return -1;
   }
 
-  // convert to int
-  return atoi(s);
+  if (val < 0) {
+    return -1;
+  }
+
+  return val;
 }
 
 void rest_init(void) {
