@@ -2,6 +2,7 @@
 #define _TIMER_H_
 
 #include <sys/select.h>
+#include <stdint.h>
 
 #define TIMER_PERIOD_MS 500
 

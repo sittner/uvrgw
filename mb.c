@@ -2,6 +2,7 @@
 #include "mqtt.h"
 #include "can.h"
 #include "timer.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,8 @@
 #include <linux/can/raw.h>
 #include <pthread.h>
 
+#define MASTER_THREAD_PERIOD_US 10000
+
 static int masters_count;
 static MB_RTU_MASTER_T *masters;
 
@@ -25,11 +28,15 @@ static int master_configure(cfg_t *cfg, void *ctx, void *child);
 static int slave_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static int master_startup(MB_RTU_MASTER_T *master);
-static int slave_task(MB_RTU_SLAVE_T *slave);
-static int send_value(void *v, double f);
+static void *master_thread(void *ptr);
+static int master_task(MB_RTU_MASTER_T *master, int64_t now);
+static void slave_task_init(MB_RTU_SLAVE_T *slave, int64_t now);
+static int slave_task_read(MB_RTU_SLAVE_T *slave, int64_t now);
+static int slave_task_write(MB_RTU_SLAVE_T *slave, int64_t now);
+static int write_schedule(void *v, double f);
+static int write_execute(MB_RTU_SLAVE_VAL_T *val);
 static int read_bits(MB_RTU_SLAVE_VAL_T *grp);
 static int read_registers(MB_RTU_SLAVE_VAL_T *grp);
-static double val_limit(double val, double min, double max);
 
 void mb_init(void) {
   masters_count = 0;
@@ -48,6 +55,7 @@ static int master_configure(cfg_t *cfg, void *ctx, void *child) {
   master->parity = cfg_getint(cfg, "parity");
   master->data_bits = cfg_getint(cfg, "data_bits");
   master->stop_bits = cfg_getint(cfg, "stop_bits");
+  master->separation_time = cfg_getint(cfg, "separation_time");
   master->timeout = cfg_getint(cfg, "timeout");
   master->mode = cfg_getint(cfg, "mode");
   master->rts = cfg_getint(cfg, "rts");
@@ -58,7 +66,7 @@ static int master_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  pthread_mutex_init(&master->bus_lock, NULL);
+  pthread_mutex_init(&master->write_lock, NULL);
 
   return uvrgw_conf_config_childs(cfg, "slave", &master->slaves_count, (void **) &master->slaves, sizeof(MB_RTU_SLAVE_T), master, slave_configure);
 }
@@ -217,7 +225,7 @@ void mb_register_disp_cbs(void) {
     for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
       for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
         if (val->dir == UVRGW_CONF_VAL_DIR_OUT) {
-          uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+          uvrgw_conf_register_disp_cb(val->disp, val, write_schedule);
         }
       }
     }
@@ -240,7 +248,7 @@ void mb_unconfigure(void) {
       free(slave->values);
       free(slave->input_buf);
     }
-    pthread_mutex_destroy(&master->bus_lock);
+    pthread_mutex_destroy(&master->write_lock);
     free(master->slaves);
   }
   free(masters);
@@ -260,6 +268,12 @@ int mb_startup(void) {
 }
 
 static int master_startup(MB_RTU_MASTER_T *master) {
+  int64_t now;
+  MB_RTU_SLAVE_T *slave;
+  int slave_idx;
+
+  now = utl_get_ticks();
+
   master->ctx = modbus_new_rtu(master->interface, master->baud, (char) master->parity, master->data_bits, master->stop_bits);
   if (master->ctx == NULL) {
     syslog(LOG_ERR, "Could not create modbus instance");
@@ -293,6 +307,20 @@ static int master_startup(MB_RTU_MASTER_T *master) {
     }
   }
 
+  // initial slaves task state
+  for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
+    slave_task_init(slave, now);
+  }
+
+  if (master->slaves_count > 0) {
+    master->thread_running = true;
+    if (pthread_create(&(master->thread), NULL, master_thread, (void*) master) != 0) {
+      master->thread_running = false;
+      syslog(LOG_ERR, "failed to start master thread");
+      goto fail2;
+    }
+  }
+
   return 0;
 
 fail2:
@@ -309,6 +337,10 @@ void mb_shutdown(void) {
   int master_idx;
 
   for (master = masters, master_idx = 0; master_idx < masters_count; master++, master_idx++) {
+    if (master->thread_running) {
+      master->thread_running = false;
+      pthread_join(master->thread, NULL);
+    }
     if (master->ctx != NULL) {
       modbus_close(master->ctx);
       modbus_free(master->ctx);
@@ -317,56 +349,121 @@ void mb_shutdown(void) {
   }
 }
 
-int mb_task(void) {
-  MB_RTU_MASTER_T *master;
-  int master_idx;
-  MB_RTU_SLAVE_T *slave;
-  int slave_idx;
+static void *master_thread(void *ptr) {
+  MB_RTU_MASTER_T *master = (MB_RTU_MASTER_T *) ptr;
+  int64_t now;
 
-  for (master = masters, master_idx = 0; master_idx < masters_count; master++, master_idx++) {
-    for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
-      if (slave_task(slave) < 0) {
-        return -1;
+  while (master->thread_running) {
+    now = utl_get_ticks();
+    if (master->next_transaction <= now) {
+      if (master_task(master, now) > 0) {
+        master->next_transaction = now + master->separation_time;
       }
     }
+    usleep(MASTER_THREAD_PERIOD_US);
+  }
+
+  return NULL;
+}
+
+static int master_task(MB_RTU_MASTER_T *master, int64_t now) {
+  MB_RTU_SLAVE_T *slave;
+  int ret;
+
+  // get current slave
+  if (master->slave_curr_idx < master->slaves_count) {
+    slave = &(master->slaves[master->slave_curr_idx]);
+
+    // process reads (only one request per timer period)
+    ret = slave_task_read(slave, now);
+    if (ret != 0) {
+      return ret;
+    }
+
+    // process writes (only one request per timer period)
+    ret = slave_task_write(slave, now);
+    if (ret != 0) {
+      return ret;
+    }
+
+    // all slave IOs done: reset task state and go to next
+    slave_task_init(slave, now);
+    (master->slave_curr_idx)++;
+  }
+
+  if (master->slave_curr_idx >= master->slaves_count) {
+    master->slave_curr_idx = 0;
   }
 
   return 0;
 }
 
-static int slave_task(MB_RTU_SLAVE_T *slave) {
+static void slave_task_init(MB_RTU_SLAVE_T *slave, int64_t now) {
+  slave->next_poll =  now + slave->interval;
+  slave->in_group_curr = slave->in_group_head;
+  slave->value_out_curr = slave->values_head;
+}
+
+static int slave_task_read(MB_RTU_SLAVE_T *slave, int64_t now) {
   MB_RTU_SLAVE_VAL_T *grp;
 
-  // check, if we have at last one item found
-  if (slave->in_group_head == NULL) {
+  // check poll timer
+  if (slave->next_poll > now) {
     return 0;
   }
 
-  // check timer
-  slave->poll_timer += TIMER_PERIOD_MS;
-  if (slave->value_in_curr == NULL) {
-    if (slave->poll_timer < slave->interval) {
-      return 0;
-    }
-    slave->poll_timer -=  slave->interval;
-    slave->value_in_curr = slave->in_group_head;
+  // get current group
+  grp = slave->in_group_curr;
+  if (grp == NULL) {
+    return 0;
   }
 
   // read registers
-  grp = slave->value_in_curr;
   if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || grp->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
     if (read_bits(grp) < 0) {
       syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d)", slave->id, grp->addr, grp->in_group_count);
+      return -1;
     }
   } else {
     if (read_registers(grp) < 0) {
       syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d)", slave->id, grp->addr, grp->in_group_count);
+      return -1;
     }
   }
 
-  slave->value_in_curr = grp->in_group_next;
+  slave->in_group_curr = grp->in_group_next;
 
-  return 0;
+  return 1;
+}
+
+static int slave_task_write(MB_RTU_SLAVE_T *slave, int64_t now) {
+  int ret;
+  MB_RTU_SLAVE_VAL_T *val;
+
+  // process next pending value
+  while (true) {
+    val = slave->value_out_curr;
+    if (val == NULL) {
+      return 0;
+    }
+    slave->value_out_curr = val->next;
+
+    // check for output
+    if (val->dir != UVRGW_CONF_VAL_DIR_OUT) {
+      continue;
+    }
+
+    // input registers are read only
+    if (val->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || val->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
+      continue;
+    }
+
+    // execute write, if pending (only one request per timer period)
+    ret = write_execute(val);
+    if (ret != 0) {
+      return ret;
+    }
+  }
 }
 
 static int read_bits(MB_RTU_SLAVE_VAL_T *grp) {
@@ -378,12 +475,9 @@ static int read_bits(MB_RTU_SLAVE_VAL_T *grp) {
   int ret;
   uint8_t *p;
 
-  pthread_mutex_lock(&master->bus_lock);
-
   // set slave address
   ret = modbus_set_slave(master->ctx, slave->id);
   if (ret < 0) {
-    pthread_mutex_unlock(&master->bus_lock);
     return ret;
   }
 
@@ -392,8 +486,6 @@ static int read_bits(MB_RTU_SLAVE_VAL_T *grp) {
   } else {
     ret = modbus_read_bits(master->ctx, grp->addr, grp->in_group_count, buf);
   }
-
-  pthread_mutex_unlock(&master->bus_lock);
 
   if (ret < 0) {
     return ret;
@@ -423,12 +515,9 @@ static int read_registers(MB_RTU_SLAVE_VAL_T *grp) {
   int ret;
   uint16_t *p;
 
-  pthread_mutex_lock(&master->bus_lock);
-
   // set slave address
   ret = modbus_set_slave(master->ctx, slave->id);
   if (ret < 0) {
-    pthread_mutex_unlock(&master->bus_lock);
     return ret;
   }
 
@@ -437,8 +526,6 @@ static int read_registers(MB_RTU_SLAVE_VAL_T *grp) {
   } else {
     ret = modbus_read_registers(master->ctx, grp->addr, grp->in_group_count, buf);
   }
-
-  pthread_mutex_unlock(&master->bus_lock);
 
   if (ret < 0) {
     return ret;
@@ -465,45 +552,60 @@ static int read_registers(MB_RTU_SLAVE_VAL_T *grp) {
   return 0;
 }
 
-static int send_value(void *v, double f) {
+static int write_schedule(void *v, double f) {
   MB_RTU_SLAVE_VAL_T *val = (MB_RTU_SLAVE_VAL_T *) v;
   MB_RTU_SLAVE_T *slave = val->slave;
   MB_RTU_MASTER_T *master = slave->master;
+
+  pthread_mutex_lock(&master->write_lock);
+  val->write_value = f;
+  val->write_pending = true;
+  pthread_mutex_unlock(&master->write_lock);
+
+  return 0;
+}
+
+static int write_execute(MB_RTU_SLAVE_VAL_T *val) {
+  MB_RTU_SLAVE_T *slave = val->slave;
+  MB_RTU_MASTER_T *master = slave->master;
+  bool pending;
+  double f;
   uint16_t *buf;
-  int ret;
 
-  // input registers are read only
-  if (val->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || val->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
+  pthread_mutex_lock(&master->write_lock);
+  pending = val->write_pending;
+  f = val->write_value;
+  val->write_pending = false;
+  pthread_mutex_unlock(&master->write_lock);
+
+  // check for pending write
+  if (!pending) {
     return 0;
   }
-
-  // bitmasks are not supported (no atomic write)
-  if (val->type == UVRGW_CONF_MB_TYPE_BITMASK) {
-    return 0;
-  }
-
-  pthread_mutex_lock(&master->bus_lock);
 
   // set slave address
-  ret = modbus_set_slave(master->ctx, slave->id);
-  if (ret < 0) {
-    pthread_mutex_unlock(&master->bus_lock);
+  if (modbus_set_slave(master->ctx, slave->id) < 0) {
     syslog(LOG_WARNING, "Failed to set MODBUS slave id %d", slave->id);
     return -1;
   }
 
-  ret = 0;
   if (val->type == UVRGW_CONF_MB_TYPE_BIT) {
-    ret = modbus_write_bit(master->ctx, val->addr, (f > 0.5));
+    if (modbus_write_bit(master->ctx, val->addr, (f > 0.5)) < 0) {
+      return -1;
+    }
   } else {
     switch (val->type) {
       case UVRGW_CONF_MB_TYPE_SIGNED:
         f = (f - val->offset) / val->scale;
-        ret = modbus_write_register(master->ctx, val->addr, (int16_t) val_limit(f, INT16_MIN, INT16_MAX));
+        if (modbus_write_register(master->ctx, val->addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX)) < 0) {
+          return -1;
+        }
         break;
       case UVRGW_CONF_MB_TYPE_UNSIGNED:
         f = (f - val->offset) / val->scale;
-        ret = modbus_write_register(master->ctx, val->addr, (uint16_t) val_limit(f, 0.0, UINT16_MAX));
+        if (modbus_write_register(master->ctx, val->addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX)) < 0) {
+          return -1;
+        }
         break;
       case UVRGW_CONF_MB_TYPE_BITMASK:
         buf = &val->same_base->valbuf;
@@ -512,25 +614,13 @@ static int send_value(void *v, double f) {
         } else {
           *buf &= ~(1 << val->pos);
         }
-        ret = modbus_write_register(master->ctx, val->addr, *buf);
+        if (modbus_write_register(master->ctx, val->addr, *buf) < 0) {
+          return -1;
+        }
         break;
     }
   }
 
-  pthread_mutex_unlock(&master->bus_lock);
-
-  return ret;
-}
-
-static double val_limit(double val, double min, double max) {
-  if (val < min) {
-    return min;
-  }
-
-  if (val > max) {
-    return max;
-  }
-
-  return val;
+  return 1;
 }
 

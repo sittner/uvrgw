@@ -3,6 +3,7 @@
 #include "mb.h"
 #include "timer.h"
 #include "ntp_check.h"
+#include "utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -36,7 +37,6 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface);
 static int iface_task(CAN_IFACE_T *iface);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
-static double val_limit(double val, double min, double max);
 static int send_value(void *v, double f);
 static int send_timestamp(CAN_IFACE_T *iface);
 
@@ -388,18 +388,6 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
   }
 }
 
-static double val_limit(double val, double min, double max) {
-  if (val < min) {
-    return min;
-  }
-
-  if (val > max) {
-    return max;
-  }
-
-  return val;
-}
-
 static int send_value(void *v, double f) {
   CAN_VAL_T *val = (CAN_VAL_T *) v;
   CAN_FRAME_T *frame = val->frame;
@@ -425,22 +413,22 @@ static int send_value(void *v, double f) {
     p = &frame->send_buf.data[val->pos];
     switch (val->type) {
       case UVRGW_CONF_CAN_TYPE_U8:
-        write_value(p, 1, (uint8_t) val_limit(f, 0.0, UINT8_MAX));
+        write_value(p, 1, (uint8_t) utl_val_limit(f, 0.0, UINT8_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S8:
-        write_value(p, 1, (int8_t) val_limit(f, INT8_MIN, INT8_MAX));
+        write_value(p, 1, (int8_t) utl_val_limit(f, INT8_MIN, INT8_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_U16:
-        write_value(p, 2, (uint16_t) val_limit(f, 0.0, UINT16_MAX));
+        write_value(p, 2, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S16:
-        write_value(p, 2, (int16_t) val_limit(f, INT16_MIN, INT16_MAX));
+        write_value(p, 2, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_U32:
-        write_value(p, 4, (uint32_t) val_limit(f, 0.0, UINT32_MAX));
+        write_value(p, 4, (uint32_t) utl_val_limit(f, 0.0, UINT32_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S32:
-        write_value(p, 4, (int32_t) val_limit(f, INT32_MIN, INT32_MAX));
+        write_value(p, 4, (int32_t) utl_val_limit(f, INT32_MIN, INT32_MAX));
         break;
     }
   }

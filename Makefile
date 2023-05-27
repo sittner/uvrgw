@@ -4,6 +4,7 @@ TARGET = uvrgw
 
 SRC = \
 	main.c \
+	utils.c \
 	uvrgw_conf.c \
 	can.c \
 	timer.c \
@@ -22,7 +23,7 @@ CFLAGS += -Wall
 
 CFLAGS += -g
 
-LIBS += -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c
+LIBS += -lpthread -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c
 
 .PHONY: all clean realclean install
 

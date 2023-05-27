@@ -117,6 +117,7 @@ static cfg_opt_t mb_rtu_opts[] = {
   CFG_INT_CB("parity", UVRGW_CONF_MB_PARITY_NONE, CFGF_NONE, parse_mb_parity),
   CFG_INT("data_bits", 8, CFGF_NONE),
   CFG_INT("stop_bits", 1, CFGF_NONE),
+  CFG_INT("separation_time", 0, CFGF_NONE),
   CFG_INT("timeout", 250, CFGF_NONE),
   CFG_INT_CB("mode", MODBUS_RTU_RS232, CFGF_NONE, parse_mb_rtu_mode),
   CFG_INT_CB("rts", MODBUS_RTU_RTS_NONE, CFGF_NONE, parse_mb_rtu_rts),
