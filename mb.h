@@ -34,6 +34,8 @@ typedef struct MB_RTU_SLAVE_VAL {
   int in_group_count;
   int in_group_index;
 
+  struct MB_RTU_SLAVE_VAL *value_out_next;
+
   UVRGW_CONF_VAL_DISPATCH_T *disp;
   uint16_t valbuf;
 
@@ -58,6 +60,7 @@ typedef struct MB_RTU_SLAVE {
   struct MB_RTU_SLAVE_VAL *in_group_head;
   struct MB_RTU_SLAVE_VAL *in_group_curr;
 
+  struct MB_RTU_SLAVE_VAL *value_out_head;
   struct MB_RTU_SLAVE_VAL *value_out_curr;
 
   int64_t next_poll;

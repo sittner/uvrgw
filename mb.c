@@ -30,7 +30,6 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static int master_startup(MB_RTU_MASTER_T *master);
 static void *master_thread(void *ptr);
 static int master_task(MB_RTU_MASTER_T *master, int64_t now);
-static void slave_task_init(MB_RTU_SLAVE_T *slave, int64_t now);
 static int slave_task_read(MB_RTU_SLAVE_T *slave, int64_t now);
 static int slave_task_write(MB_RTU_SLAVE_T *slave, int64_t now);
 static int write_schedule(void *v, double f);
@@ -191,6 +190,23 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
     grp->in_group_count++;
   }
 
+  // build output list
+  for (val = slave->values_head; val != NULL; val = val->next) {
+    // process outputs only
+    if (val->dir != UVRGW_CONF_VAL_DIR_OUT) {
+      continue;
+    }
+
+    // input registers are read only
+    if (val->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || val->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
+      continue;
+    }
+
+    // add to list
+    val->value_out_next = slave->value_out_head;
+    slave->value_out_head = val;
+  }
+
   return 0;
 }
 
@@ -268,12 +284,6 @@ int mb_startup(void) {
 }
 
 static int master_startup(MB_RTU_MASTER_T *master) {
-  int64_t now;
-  MB_RTU_SLAVE_T *slave;
-  int slave_idx;
-
-  now = utl_get_ticks();
-
   master->ctx = modbus_new_rtu(master->interface, master->baud, (char) master->parity, master->data_bits, master->stop_bits);
   if (master->ctx == NULL) {
     syslog(LOG_ERR, "Could not create modbus instance");
@@ -305,11 +315,6 @@ static int master_startup(MB_RTU_MASTER_T *master) {
       syslog(LOG_ERR, "Could not set modbus RTS delay");
       goto fail2;
     }
-  }
-
-  // initial slaves task state
-  for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
-    slave_task_init(slave, now);
   }
 
   if (master->slaves_count > 0) {
@@ -387,7 +392,8 @@ static int master_task(MB_RTU_MASTER_T *master, int64_t now) {
     }
 
     // all slave IOs done: reset task state and go to next
-    slave_task_init(slave, now);
+    slave->in_group_curr = slave->in_group_head;
+    slave->value_out_curr = slave->value_out_head;
     (master->slave_curr_idx)++;
   }
 
@@ -396,12 +402,6 @@ static int master_task(MB_RTU_MASTER_T *master, int64_t now) {
   }
 
   return 0;
-}
-
-static void slave_task_init(MB_RTU_SLAVE_T *slave, int64_t now) {
-  slave->next_poll =  now + slave->interval;
-  slave->in_group_curr = slave->in_group_head;
-  slave->value_out_curr = slave->values_head;
 }
 
 static int slave_task_read(MB_RTU_SLAVE_T *slave, int64_t now) {
@@ -415,6 +415,7 @@ static int slave_task_read(MB_RTU_SLAVE_T *slave, int64_t now) {
   // get current group
   grp = slave->in_group_curr;
   if (grp == NULL) {
+    slave->next_poll =  now + slave->interval;
     return 0;
   }
 
@@ -446,17 +447,7 @@ static int slave_task_write(MB_RTU_SLAVE_T *slave, int64_t now) {
     if (val == NULL) {
       return 0;
     }
-    slave->value_out_curr = val->next;
-
-    // check for output
-    if (val->dir != UVRGW_CONF_VAL_DIR_OUT) {
-      continue;
-    }
-
-    // input registers are read only
-    if (val->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || val->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
-      continue;
-    }
+    slave->value_out_curr = val->value_out_next;
 
     // execute write, if pending (only one request per timer period)
     ret = write_execute(val);
