@@ -276,6 +276,7 @@ int mb_startup(void) {
 
   for (master = masters, master_idx = 0; master_idx < masters_count; master++, master_idx++) {
     if (master_startup(master) < 0) {
+      mb_shutdown();
       return -1;
     }
   }
