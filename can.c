@@ -360,6 +360,8 @@ static int iface_task(CAN_IFACE_T *iface) {
       continue;
     }
 
+    frame->send_time = 0;
+
     count = write(iface->can_fd, &(frame->send_buf), sizeof(struct can_frame));
     if (count != sizeof(struct can_frame)) {
       pthread_mutex_unlock(&frame->send_buf_mutex);
