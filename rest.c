@@ -3,6 +3,7 @@
 #include "can.h"
 #include "mb.h"
 #include "mqtt.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,6 +145,7 @@ int rest_task(void) {
 }
 
 static int conn_task(REST_CONN_T *conn) {
+  int64_t now;
   REST_VAL_T *val;
   int val_idx;
   json_object *json;
@@ -152,11 +154,11 @@ static int conn_task(REST_CONN_T *conn) {
   double f;
 
   // check poll period
-  conn->poll_timer += TIMER_PERIOD_MS;
-  if (conn->poll_timer < conn->interval) {
+  now = utl_get_ticks();
+  if (conn->next_poll > now) {
     return 0;
   }
-  conn->poll_timer -=  conn->interval;
+  conn->next_poll = now + conn->interval;
 
   // load json from server
   json = rest_get_json(conn->url, conn->user, conn->pwd, conn->timeout);

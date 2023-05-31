@@ -3,6 +3,8 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdint.h>
+
 struct REST_VAL;
 struct REST_CONN;
 
@@ -28,7 +30,7 @@ typedef struct REST_CONN {
   int values_count;
   struct REST_VAL *values;
 
-  int poll_timer;
+  int64_t next_poll;
 } REST_CONN_T;
 
 void rest_init(void);
