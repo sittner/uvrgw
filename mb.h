@@ -40,7 +40,7 @@ typedef struct MB_RTU_SLAVE_VAL {
   uint16_t valbuf;
 
   bool write_pending;
-  bool write_value;
+  double write_value;
 
 } MB_RTU_SLAVE_VAL_T;
 
