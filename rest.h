@@ -4,6 +4,7 @@
 #include "uvrgw_conf.h"
 
 #include <stdint.h>
+#include <pthread.h>
 
 struct REST_VAL;
 struct REST_CONN;
@@ -30,6 +31,8 @@ typedef struct REST_CONN {
   int values_count;
   struct REST_VAL *values;
 
+  pthread_t thread;
+  bool thread_running;
   int64_t next_poll;
 } REST_CONN_T;
 
@@ -39,6 +42,5 @@ void rest_unconfigure(void);
 
 int rest_startup(void);
 void rest_shutdown(void);
-int rest_task(void);
 
 #endif

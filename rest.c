@@ -8,11 +8,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <unistd.h>
 #include <string.h>
 #include <syslog.h>
 #include <json-c/json.h>
 #include <curl/curl.h>
 #include <ctype.h>
+
+#define CONN_THREAD_PERIOD_US 100000
 
 typedef struct {
   struct json_tokener *tok;
@@ -25,6 +28,7 @@ static REST_CONN_T *conns;
 static int conn_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
 
+static void *conn_thread(void *ptr);
 static int conn_task(REST_CONN_T *conn);
 
 static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout);
@@ -114,34 +118,58 @@ void rest_unconfigure(void) {
 }
 
 int rest_startup(void) {
+  REST_CONN_T *conn;
+  int conn_idx;
+
   // initialize libcurl
   if (curl_global_init(CURL_GLOBAL_ALL)) {
     syslog(LOG_ERR, "Failed to initialize libcurl.");
     goto fail0;
   }
 
+  // start connections threads
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    conn->thread_running = true;
+    if (pthread_create(&(conn->thread), NULL, conn_thread, (void*) conn) != 0) {
+      conn->thread_running = false;
+      syslog(LOG_ERR, "failed to start connection thread");
+      goto fail1;
+    }
+  }
+
   return 0;
 
+fail1:
+  rest_shutdown();
 fail0:
   return -1;
 }
 
 void rest_shutdown(void) {
+  REST_CONN_T *conn;
+  int conn_idx;
+
+  // stop connections threads
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    if (conn->thread_running) {
+      conn->thread_running = false;
+      pthread_join(conn->thread, NULL);
+    }
+  }
+
   // cleanup libcurl
   curl_global_cleanup();
 }
 
-int rest_task(void) {
-  REST_CONN_T *conn;
-  int conn_idx;
+static void *conn_thread(void *ptr) {
+  REST_CONN_T *conn = (REST_CONN_T *) ptr;
 
-  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
-    if (conn_task(conn) < 0) {
-      return -1;
-    }
+  while (conn->thread_running) {
+    conn_task(conn);
+    usleep(CONN_THREAD_PERIOD_US);
   }
 
-  return 0;
+  return NULL;
 }
 
 static int conn_task(REST_CONN_T *conn) {

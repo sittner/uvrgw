@@ -1,6 +1,5 @@
 #include "timer.h"
 #include "can.h"
-#include "rest.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -82,10 +81,6 @@ int timer_handler(fd_set *fd_set) {
   }
 
   if (can_task() < 0) {
-    return -1;
-  }
-
-  if (rest_task() < 0) {
     return -1;
   }
 
