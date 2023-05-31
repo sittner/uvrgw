@@ -26,6 +26,8 @@
 #include <time.h>
 #include <sys/time.h>
 
+#define IFACE_THREAD_PERIOD_US 20000
+
 static int can_ifaces_count;
 static CAN_IFACE_T *can_ifaces;
 
@@ -34,6 +36,7 @@ static int frame_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static int iface_startup(CAN_IFACE_T *iface);
 static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface);
+static void *iface_thread(void *ptr);
 static int iface_task(CAN_IFACE_T *iface);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
@@ -112,25 +115,18 @@ void can_shutdown(void) {
   int iface_idx;
 
   for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
+    // stop thread
+    if (iface->thread_running) {
+      iface->thread_running = false;
+      pthread_join(iface->thread, NULL);
+    }
+
+    // close socket
     if (iface->can_fd >= 0) {
-      // close socket
       close(iface->can_fd);
       iface->can_fd = -1;
     }
   }
-}
-
-int can_task(void) {
-  CAN_IFACE_T *iface;
-  int iface_idx;
-
-  for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
-    if (iface_task(iface) < 0) {
-      return -1;
-    }
-  }
-
-  return 0;
 }
 
 int can_handler(fd_set *fd_set) {
@@ -231,6 +227,14 @@ static int iface_startup(CAN_IFACE_T *iface) {
     goto fail1;
   }
 
+  // start thread
+  iface->thread_running = true;
+  if (pthread_create(&(iface->thread), NULL, iface_thread, (void*) iface) != 0) {
+    iface->thread_running = false;
+    syslog(LOG_ERR, "failed to start iface thread");
+    goto fail1;
+  }
+
   return 0;
 
 fail1:
@@ -315,6 +319,17 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
   }
 
   return 0;
+}
+
+static void *iface_thread(void *ptr) {
+  CAN_IFACE_T *iface = (CAN_IFACE_T *) ptr;
+
+  while (iface->thread_running) {
+    iface_task(iface);
+    usleep(IFACE_THREAD_PERIOD_US);
+  }
+
+  return NULL;
 }
 
 static int iface_task(CAN_IFACE_T *iface) {

@@ -49,6 +49,8 @@ typedef struct CAN_IFACE {
   struct CAN_FRAME *frames;
 
   int can_fd;
+  pthread_t thread;
+  bool thread_running;
   int64_t next_timestamp;
 } CAN_IFACE_T;
 
@@ -59,8 +61,6 @@ void can_unconfigure(void);
 
 int can_startup(void);
 void can_shutdown(void);
-
-int can_task(void);
 
 void can_update_fds(fd_set *fd_set);
 int can_handler(fd_set *fd_set);
