@@ -1,7 +1,6 @@
 #include "can.h"
 #include "mqtt.h"
 #include "mb.h"
-#include "timer.h"
 #include "ntp_check.h"
 #include "utils.h"
 

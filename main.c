@@ -3,7 +3,6 @@
 #include "uvrgw_conf.h"
 #include "can.h"
 #include "mb.h"
-#include "timer.h"
 #include "mqtt.h"
 #include "rest.h"
 
@@ -15,20 +14,19 @@
 #include <sched.h>
 #include <syslog.h>
 #include <signal.h>
-#include <sys/timerfd.h>
 #include <sys/eventfd.h>
 
 #define DEFAULT_CFG_FILE "/etc/uvrgw.conf"
 
-static bool exit_flag;
+static int exit_fd;
 
-static void sighandler(int sig)
-{
-  switch (sig)
-  {
+static void sighandler(int sig) {
+  uint64_t u = 1;
+
+  switch (sig) {
     case SIGINT:
     case SIGTERM:
-      exit_flag = true;
+      write(exit_fd, &u, sizeof(u));
       break;
     case SIGHUP:
       break;
@@ -43,14 +41,20 @@ int main(int argc, char **argv)
   const char *cfg_file;
   int err;
   struct sigaction act;
+  uint64_t u;
 
   cfg_file = DEFAULT_CFG_FILE;
   if (argc >= 2) {
     cfg_file = argv[1];
   }
 
+  exit_fd = eventfd(0, 0);
+  if (exit_fd < 0) {
+    syslog(LOG_ERR, "unable to create exit event fd.");
+    goto fail_exit_fd;
+  }
+
   // install signal handler
-  exit_flag = false;
   memset(&act, 0, sizeof(act));
   act.sa_handler = &sighandler;
   sigaction(SIGINT, &act, NULL);
@@ -77,15 +81,11 @@ int main(int argc, char **argv)
     goto fail_rest;
   }
 
-  if (timer_startup() < 0) {
-    goto fail_timer;
-  }
-
-  while(!exit_flag) {
+  while(true) {
     fd_set read_fd_set;
     FD_ZERO(&read_fd_set);
+    FD_SET(exit_fd, &read_fd_set);
     can_update_fds(&read_fd_set);
-    timer_update_fds(&read_fd_set);
 
     err = select(FD_SETSIZE, &read_fd_set, NULL, NULL, NULL);
     if (err < 0) {
@@ -96,23 +96,21 @@ int main(int argc, char **argv)
       goto fail_loop;
     }
 
+    // handle exit fd
+    if (FD_ISSET(exit_fd, &read_fd_set)) {
+      read(exit_fd, &u, sizeof(u));
+      break;
+    }
+
     // handle CAN data
     if (can_handler(&read_fd_set) < 0) {
       goto fail_loop;
     }
-
-    // check task timers
-    if (timer_handler(&read_fd_set) < 0) {
-      goto fail_loop;
-    }
-
   }
     
   ret = 0;
 
 fail_loop:
-  timer_shutdown();
-fail_timer:
   rest_shutdown();
 fail_rest:
   mqtt_shutdown();
@@ -123,6 +121,8 @@ fail_mb:
 fail_can:
   uvrgw_conf_cleanup();
 fail_conf:
+  close(exit_fd);
+fail_exit_fd:
   return ret;
 }
 

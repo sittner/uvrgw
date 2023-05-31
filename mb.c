@@ -1,7 +1,6 @@
 #include "mb.h"
 #include "mqtt.h"
 #include "can.h"
-#include "timer.h"
 #include "utils.h"
 
 #include <stdio.h>

@@ -7,7 +7,6 @@ SRC = \
 	utils.c \
 	uvrgw_conf.c \
 	can.c \
-	timer.c \
 	mb.c \
 	mqtt.c \
 	rest.c \
