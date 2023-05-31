@@ -231,9 +231,6 @@ static int iface_startup(CAN_IFACE_T *iface) {
     goto fail1;
   }
 
-  // init timestamp send timer
-  iface->timestamp_timer = 0;
-
   return 0;
 
 fail1:
@@ -321,18 +318,18 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
 }
 
 static int iface_task(CAN_IFACE_T *iface) {
+  int64_t now;
   CAN_FRAME_T *frame;
   int frame_idx;
   ssize_t count;
 
+  now = utl_get_ticks();
+
   // send timestamp
-  if (iface->timestamp_period > 0) {
-    iface->timestamp_timer += TIMER_PERIOD_MS;
-    if (iface->timestamp_timer >= iface->timestamp_period) {
-      iface->timestamp_timer -= iface->timestamp_period;
-      if (send_timestamp(iface) < 0) {
-        return -1;
-      }
+  if (iface->timestamp_period > 0 && iface->next_timestamp <= now) {
+    iface->next_timestamp = now + iface->timestamp_period;
+    if (send_timestamp(iface) < 0) {
+      return -1;
     }
   }
 
@@ -341,18 +338,13 @@ static int iface_task(CAN_IFACE_T *iface) {
     if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_OUT)) {
       continue;
     }
-    if (!frame->send_pending) {
-      continue;
-    }
-
-    if (frame->send_timer < iface->send_timeout) {
-      frame->send_timer += TIMER_PERIOD_MS;
-      continue;
-    }
-    frame->send_timer = 0;
 
     pthread_mutex_lock(&frame->send_buf_mutex);
-    frame->send_pending = false;
+
+    if (frame->send_time == 0 || frame->send_time > now) {
+      pthread_mutex_unlock(&frame->send_buf_mutex);
+      continue;
+    }
 
     count = write(iface->can_fd, &(frame->send_buf), sizeof(struct can_frame));
     if (count != sizeof(struct can_frame)) {
@@ -389,6 +381,7 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
 }
 
 static int send_value(void *v, double f) {
+  int64_t now;
   CAN_VAL_T *val = (CAN_VAL_T *) v;
   CAN_FRAME_T *frame = val->frame;
   uint8_t *p;
@@ -397,6 +390,8 @@ static int send_value(void *v, double f) {
   if (frame->can_id < 0) {
     return 0;
   }
+
+  now = utl_get_ticks();
 
   pthread_mutex_lock(&frame->send_buf_mutex);
 
@@ -433,7 +428,10 @@ static int send_value(void *v, double f) {
     }
   }
 
-  frame->send_pending = true;
+  if (frame->send_time == 0) {
+    frame->send_time = now + frame->iface->send_timeout;
+  }
+
   pthread_mutex_unlock(&frame->send_buf_mutex);
   return 0;
 }

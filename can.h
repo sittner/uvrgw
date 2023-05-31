@@ -4,6 +4,7 @@
 #include "uvrgw_conf.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <confuse.h>
 #include <linux/can.h>
@@ -36,8 +37,7 @@ typedef struct CAN_FRAME {
 
   struct can_frame send_buf;
   pthread_mutex_t send_buf_mutex;
-  bool send_pending;
-  int send_timer;
+  int64_t send_time;
 } CAN_FRAME_T;
 
 typedef struct CAN_IFACE {
@@ -49,7 +49,7 @@ typedef struct CAN_IFACE {
   struct CAN_FRAME *frames;
 
   int can_fd;
-  int timestamp_timer;
+  int64_t next_timestamp;
 } CAN_IFACE_T;
 
 void can_init(void);
