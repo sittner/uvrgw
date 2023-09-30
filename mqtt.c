@@ -145,7 +145,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->type == UVRGW_CONF_MQTT_TYPE_NUMBER && val->fmt == NULL) {
+  if (val->dir == UVRGW_CONF_VAL_DIR_OUT && val->type == UVRGW_CONF_MQTT_TYPE_NUMBER && val->fmt == NULL) {
     syslog(LOG_ERR, "mqtt value fmt not given.");
     return -1;
   }
