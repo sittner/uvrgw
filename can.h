@@ -62,7 +62,7 @@ void can_unconfigure(void);
 int can_startup(void);
 void can_shutdown(void);
 
-void can_update_fds(fd_set *fd_set);
+void can_update_fds(fd_set *fd_set, int *max_fd);
 int can_handler(fd_set *fd_set);
 
 #endif

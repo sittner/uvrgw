@@ -127,7 +127,7 @@ bool ntp_check(void) {
     goto fail0;
   }
 
-  if (connect(sd,(struct sockaddr *) &sock, sizeof(sock)) < 0) {
+  if (connect(sd, (struct sockaddr *) &sock, sizeof(sock)) < 0) {
     goto fail1;
   }
 
@@ -139,7 +139,7 @@ bool ntp_check(void) {
 
   //----------------------------------------------------------------------
   // Receive the reply message
-  n = select(sd + 1, &fds,(fd_set *) 0,(fd_set *) 0, &tv);
+  n = select(sd + 1, &fds, NULL, NULL, &tv);
   if (n <= 0) {
     goto fail1;
   }

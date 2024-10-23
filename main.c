@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "uvrgw_conf.h"
+#include "utils.h"
 #include "can.h"
 #include "mb.h"
 #include "mqtt.h"
@@ -42,6 +43,8 @@ int main(int argc, char **argv)
   int err;
   struct sigaction act;
   uint64_t u;
+  fd_set read_fd_set;
+  int max_fd;
 
   cfg_file = DEFAULT_CFG_FILE;
   if (argc >= 2) {
@@ -82,12 +85,13 @@ int main(int argc, char **argv)
   }
 
   while(true) {
-    fd_set read_fd_set;
+    max_fd = 0;
     FD_ZERO(&read_fd_set);
-    FD_SET(exit_fd, &read_fd_set);
-    can_update_fds(&read_fd_set);
 
-    err = select(FD_SETSIZE, &read_fd_set, NULL, NULL, NULL);
+    utl_update_fds(exit_fd, &read_fd_set, &max_fd);
+    can_update_fds(&read_fd_set, &max_fd);
+
+    err = select(max_fd + 1, &read_fd_set, NULL, NULL, NULL);
     if (err < 0) {
       if (errno == EINTR) {
         continue;

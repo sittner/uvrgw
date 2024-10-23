@@ -141,13 +141,13 @@ int can_handler(fd_set *fd_set) {
   return 0;
 }
 
-void can_update_fds(fd_set *fd_set) {
+void can_update_fds(fd_set *fd_set, int *max_fd) {
   CAN_IFACE_T *iface;
   int iface_idx;
 
   for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
     if (iface->can_fd >= 0) {
-      FD_SET(iface->can_fd, fd_set);
+      utl_update_fds(iface->can_fd, fd_set, max_fd);
     }
   }
 }
