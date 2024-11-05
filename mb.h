@@ -8,11 +8,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct MB_RTU_SLAVE_VAL;
-struct MB_RTU_SLAVE;
+struct MB_SLAVE_VAL;
+struct MB_SLAVE;
+struct MB_MASTER;
 struct MB_RTU_MASTER;
+struct MB_TCP_MASTER;
 
-typedef struct MB_RTU_SLAVE_VAL {
+typedef struct MB_SLAVE_VAL {
   const char *name;
   int dir;
   int regtype;
@@ -22,19 +24,19 @@ typedef struct MB_RTU_SLAVE_VAL {
   double scale;
   double offset;
 
-  struct MB_RTU_SLAVE *slave;
+  struct MB_SLAVE *slave;
 
-  struct MB_RTU_SLAVE_VAL *prev;
-  struct MB_RTU_SLAVE_VAL *next;
-  struct MB_RTU_SLAVE_VAL *same_reg;
-  struct MB_RTU_SLAVE_VAL *same_base;
+  struct MB_SLAVE_VAL *prev;
+  struct MB_SLAVE_VAL *next;
+  struct MB_SLAVE_VAL *same_reg;
+  struct MB_SLAVE_VAL *same_base;
 
-  struct MB_RTU_SLAVE_VAL *in_group_same;
-  struct MB_RTU_SLAVE_VAL *in_group_next;
+  struct MB_SLAVE_VAL *in_group_same;
+  struct MB_SLAVE_VAL *in_group_next;
   int in_group_count;
   int in_group_index;
 
-  struct MB_RTU_SLAVE_VAL *value_out_next;
+  struct MB_SLAVE_VAL *value_out_next;
 
   UVRGW_CONF_VAL_DISPATCH_T *disp;
   uint16_t valbuf;
@@ -42,45 +44,37 @@ typedef struct MB_RTU_SLAVE_VAL {
   bool write_pending;
   double write_value;
 
-} MB_RTU_SLAVE_VAL_T;
+} MB_SLAVE_VAL_T;
 
-typedef struct MB_RTU_SLAVE {
+typedef struct MB_SLAVE {
   int id;
   int interval;
   int max_req_regs;
 
-  struct MB_RTU_MASTER *master;
+  struct MB_MASTER *master;
 
   int values_count;
-  struct MB_RTU_SLAVE_VAL *values;
+  struct MB_SLAVE_VAL *values;
 
-  struct MB_RTU_SLAVE_VAL *values_head;
-  struct MB_RTU_SLAVE_VAL *values_tail;
+  struct MB_SLAVE_VAL *values_head;
+  struct MB_SLAVE_VAL *values_tail;
 
-  struct MB_RTU_SLAVE_VAL *in_group_head;
-  struct MB_RTU_SLAVE_VAL *in_group_curr;
+  struct MB_SLAVE_VAL *in_group_head;
+  struct MB_SLAVE_VAL *in_group_curr;
 
-  struct MB_RTU_SLAVE_VAL *value_out_head;
-  struct MB_RTU_SLAVE_VAL *value_out_curr;
+  struct MB_SLAVE_VAL *value_out_head;
+  struct MB_SLAVE_VAL *value_out_curr;
 
   int64_t next_poll;
   void *input_buf;
-} MB_RTU_SLAVE_T;
+} MB_SLAVE_T;
 
-typedef struct MB_RTU_MASTER {
-  const char *interface;
-  int baud;
-  int parity;
-  int data_bits;
-  int stop_bits;
+typedef struct MB_MASTER {
   int separation_time;
   int timeout;
-  int mode;
-  int rts;
-  int rts_delay;
 
   int slaves_count;
-  struct MB_RTU_SLAVE *slaves;
+  struct MB_SLAVE *slaves;
 
   modbus_t *ctx;
   pthread_mutex_t write_lock;
@@ -90,7 +84,27 @@ typedef struct MB_RTU_MASTER {
   int64_t next_transaction;
 
   int slave_curr_idx;
+} MB_MASTER_T;
+
+typedef struct MB_RTU_MASTER {
+  struct MB_MASTER master;
+
+  const char *interface;
+  int baud;
+  int parity;
+  int data_bits;
+  int stop_bits;
+  int mode;
+  int rts;
+  int rts_delay;
 } MB_RTU_MASTER_T;
+
+typedef struct MB_TCP_MASTER {
+  struct MB_MASTER master;
+
+  const char *ip;
+  int port;
+} MB_TCP_MASTER_T;
 
 void mb_init(void);
 int mb_configure(cfg_t *cfg);
