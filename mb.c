@@ -17,6 +17,7 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <pthread.h>
+#include <math.h>
 
 #define MASTER_THREAD_PERIOD_US 10000
 
@@ -30,6 +31,7 @@ static int master_rtu_configure(cfg_t *cfg, void *ctx, void *child);
 static int master_tcp_configure(cfg_t *cfg, void *ctx, void *child);
 static int master_configure(cfg_t *cfg, MB_MASTER_T *master);
 static int slave_configure(cfg_t *cfg, void *ctx, void *child);
+static MB_SLAVE_VAL_T *find_slave_value(MB_SLAVE_T *slave, const char *name);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static void register_disp_cbs_master(MB_MASTER_T *master);
 static void unconfigure_master(MB_MASTER_T *master);
@@ -45,6 +47,8 @@ static int write_schedule(void *v, double f);
 static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_bits(MB_SLAVE_VAL_T *grp);
 static int read_registers(MB_SLAVE_VAL_T *grp);
+static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf);
+static void dispatch_sf(MB_SLAVE_VAL_T *dpval, uint16_t v);
 
 void mb_init(void) {
   rtu_masters_count = 0;
@@ -140,7 +144,7 @@ static int value_reg_cmp(MB_SLAVE_VAL_T *a, MB_SLAVE_VAL_T *b) {
 
 static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_T *slave = (MB_SLAVE_T *) child;
-  MB_SLAVE_VAL_T *val, *cmp, *grp;
+  MB_SLAVE_VAL_T *val, *cmp, *grp, *sf;
   int val_idx;
   int res;
 
@@ -233,6 +237,39 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
     grp->in_group_count++;
   }
 
+  // resolve scale factor relations
+  for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
+    // process only values with scale factor name
+    if (val->sf_name == NULL) {
+      continue;
+    }
+
+    // search scale factor source value
+    sf = find_slave_value(slave, val->sf_name);
+    if (sf == NULL) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' not found.", val->sf_name);
+      return -1;
+    }
+
+    // check value type
+    if (sf->sf_name != NULL) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must not be scale_factor dependent by it self.", val->sf_name);
+      return -1;
+    }
+    if (sf->dir != UVRGW_CONF_VAL_DIR_IN) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must be an input.", val->sf_name);
+      return -1;
+    }
+    if (sf->type != UVRGW_CONF_MB_TYPE_SIGNED) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must be an signed value.", val->sf_name);
+      return -1;
+    }
+
+    // add to destination chain of scale_factor input value
+    val->sf_next = sf->sf_dest;
+    sf->sf_dest = val;
+  }
+
   // build output list
   for (val = slave->values_head; val != NULL; val = val->next) {
     // process outputs only
@@ -253,12 +290,26 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
+static MB_SLAVE_VAL_T *find_slave_value(MB_SLAVE_T *slave, const char *name) {
+  MB_SLAVE_VAL_T *val;
+  int val_idx;
+
+  for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
+    if (strcmp(val->name, name) == 0) {
+      return val;
+    }
+  }
+
+  return NULL;
+}
+
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) child;
 
   val->slave = (MB_SLAVE_T *) ctx;
 
   val->name = uvrgw_conf_strdup(cfg_title(cfg));
+  val->sf_name = uvrgw_conf_strdup(cfg_getstr(cfg, "scale_factor"));
   val->dir = cfg_getint(cfg, "dir");
   val->regtype = cfg_getint(cfg, "regtype");
   val->addr = cfg_getint(cfg, "addr");
@@ -266,6 +317,19 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->pos = cfg_getint(cfg, "pos");
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
+
+  // check value type
+  if (val->sf_name != NULL) {
+    if (val->dir != UVRGW_CONF_VAL_DIR_IN) {
+      syslog(LOG_ERR, "modbus value scale_factor is only allowed for inputs.");
+      return -1;
+    }
+
+    if (val->type != UVRGW_CONF_MB_TYPE_SIGNED && val->type != UVRGW_CONF_MB_TYPE_UNSIGNED) {
+      syslog(LOG_ERR, "modbus value scale_factor is only allowed for singned or unsigned values.");
+      return -1;
+    }
+  }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->dir == UVRGW_CONF_VAL_DIR_OUT));
 
@@ -328,6 +392,7 @@ static void unconfigure_master(MB_MASTER_T *master) {
   for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
     for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
       free((void *) val->name);
+      free((void *) val->sf_name);
     }
     free(slave->values);
     free(slave->input_buf);
@@ -660,21 +725,62 @@ static int read_registers(MB_SLAVE_VAL_T *grp) {
     p = &buf[val->in_group_index];
     // dispatch value
     for (dpval = val; dpval != NULL; dpval = dpval->same_reg) {
-      switch (dpval->type) {
-        case UVRGW_CONF_MB_TYPE_SIGNED:
-          uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) *p)) * dpval->scale + dpval->offset);
-          break;
-        case UVRGW_CONF_MB_TYPE_UNSIGNED:
-          uvrgw_conf_disp_val(dpval->disp, dpval, ((double) *p) * dpval->scale + dpval->offset);
-          break;
-        case UVRGW_CONF_MB_TYPE_BITMASK:
-          uvrgw_conf_disp_val(dpval->disp, dpval, (*p & (1 << dpval->pos)) ? 1.0 : 0.0);
-          break;
+      if (dpval->sf_name == NULL) {
+        // no scale_factor is given -> direct dispatch
+        dispatch_value(dpval, *p, 1.0);
+      } else {
+        // scale_factor is given -> remember raw value and set pending flag
+        dpval->sf_raw = *p;
+        dpval->sf_pending = true;
+      }
+
+      // dispatch scale_factor dependent values
+      if (dpval->sf_dest != NULL) {
+        dispatch_sf(dpval, *p);
       }
     }
   }
 
   return 0;
+}
+
+static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
+  switch (dpval->type) {
+    case UVRGW_CONF_MB_TYPE_SIGNED:
+      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) v)) * sf * dpval->scale + dpval->offset);
+      break;
+    case UVRGW_CONF_MB_TYPE_UNSIGNED:
+      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) v) * sf * dpval->scale + dpval->offset);
+      break;
+    case UVRGW_CONF_MB_TYPE_BITMASK:
+      uvrgw_conf_disp_val(dpval->disp, dpval, (v & (1 << dpval->pos)) ? 1.0 : 0.0);
+      break;
+  }
+}
+
+static void dispatch_sf(MB_SLAVE_VAL_T *dpval, uint16_t v) {
+  MB_SLAVE_VAL_T *val;
+  double sf;
+
+  // To ensure consistency of values we check if scale factor has been changed
+  // since last poll. This will delay delivery of values by one cycle and drop
+  // value updates on changes of scale factor, as we don't know if the values
+  // are read before or after the update
+  if (dpval->sf_raw != v) {
+    dpval->sf_raw = v;
+    return;
+  }
+
+  // calculate scale factor
+  sf = pow(10.0, (double) ((int16_t) v));
+
+  // dispatch depended values, if peding
+  for (val = dpval->sf_dest; val != NULL; val = val->sf_next) {
+    if (val->sf_pending) {
+      dispatch_value(val, val->sf_raw, sf);
+      val->sf_pending = false;
+    }
+  }
 }
 
 static int write_schedule(void *v, double f) {

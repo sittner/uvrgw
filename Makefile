@@ -22,7 +22,7 @@ CFLAGS += -Wall
 
 CFLAGS += -g
 
-LIBS += -lpthread -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c
+LIBS += -lpthread -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c -lm
 
 .PHONY: all clean realclean install
 

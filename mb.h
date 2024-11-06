@@ -44,6 +44,12 @@ typedef struct MB_SLAVE_VAL {
   bool write_pending;
   double write_value;
 
+  const char *sf_name;
+  uint16_t sf_raw;
+  bool sf_pending;
+  struct MB_SLAVE_VAL *sf_dest;
+  struct MB_SLAVE_VAL *sf_next;
+
 } MB_SLAVE_VAL_T;
 
 typedef struct MB_SLAVE {

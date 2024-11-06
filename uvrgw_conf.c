@@ -100,6 +100,7 @@ static cfg_opt_t mb_slave_val_opts[] = {
   CFG_INT("pos", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_STR("scale_factor", NULL, CFGF_NONE),
   CFG_END()
 };
 
