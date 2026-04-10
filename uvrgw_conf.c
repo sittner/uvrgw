@@ -92,22 +92,29 @@ static cfg_opt_t can_opts[] = {
   CFG_END()
 };
 
-static cfg_opt_t mb_slave_val_opts[] = {
-  CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
-  CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
-  CFG_INT("addr", -1, CFGF_NONE),
+static cfg_opt_t mb_block_val_opts[] = {
+  CFG_INT("offset", -1, CFGF_NONE),
   CFG_INT_CB("type", -1, CFGF_NONE, parse_mb_val_type),
   CFG_INT("pos", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
-  CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_FLOAT("offset_val", 0.0, CFGF_NONE),
+  CFG_STR("scale_factor", NULL, CFGF_NONE),
   CFG_END()
 };
 
-static cfg_opt_t mb_rtu_slave_opts[] = {
+static cfg_opt_t mb_block_opts[] = {
+  CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
+  CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
+  CFG_INT("addr", -1, CFGF_NONE),
+  CFG_INT("count", -1, CFGF_NONE),
+  CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_END()
+};
+
+static cfg_opt_t mb_slave_opts[] = {
   CFG_INT("id", -1, CFGF_NONE),
   CFG_INT("interval", 0, CFGF_NONE),
-  CFG_INT("max_req_regs", 32, CFGF_NONE),
-  CFG_SEC("value", mb_slave_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("block", mb_block_opts, CFGF_MULTI),
   CFG_END()
 };
 
@@ -122,7 +129,16 @@ static cfg_opt_t mb_rtu_opts[] = {
   CFG_INT_CB("mode", MODBUS_RTU_RS232, CFGF_NONE, parse_mb_rtu_mode),
   CFG_INT_CB("rts", MODBUS_RTU_RTS_NONE, CFGF_NONE, parse_mb_rtu_rts),
   CFG_INT("rts_delay", -1, CFGF_NONE),
-  CFG_SEC("slave", mb_rtu_slave_opts, CFGF_MULTI),
+  CFG_SEC("slave", mb_slave_opts, CFGF_MULTI),
+  CFG_END()
+};
+
+static cfg_opt_t mb_tcp_opts[] = {
+  CFG_STR("ip", NULL, CFGF_NONE),
+  CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
+  CFG_INT("separation_time", 0, CFGF_NONE),
+  CFG_INT("timeout", 250, CFGF_NONE),
+  CFG_SEC("slave", mb_slave_opts, CFGF_MULTI),
   CFG_END()
 };
 
@@ -131,6 +147,7 @@ static cfg_opt_t opts[] = {
   CFG_SEC("json", json_opts, CFGF_MULTI),
   CFG_SEC("can", can_opts, CFGF_MULTI),
   CFG_SEC("modbus_rtu", mb_rtu_opts, CFGF_MULTI),
+  CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_END()
 };
 
