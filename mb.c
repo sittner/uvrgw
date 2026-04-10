@@ -160,6 +160,20 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
+    int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_BITS : MODBUS_MAX_WRITE_BITS;
+    if (blk->count > max_count) {
+      syslog(LOG_ERR, "modbus block count %d exceeds maximum %d for bit registers.", blk->count, max_count);
+      return -1;
+    }
+  } else {
+    int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_REGISTERS : MODBUS_MAX_WRITE_REGISTERS;
+    if (blk->count > max_count) {
+      syslog(LOG_ERR, "modbus block count %d exceeds maximum %d for registers.", blk->count, max_count);
+      return -1;
+    }
+  }
+
   if (uvrgw_conf_config_childs(cfg, "value", &blk->values_count, (void **) &blk->values, sizeof(MB_SLAVE_VAL_T), blk, value_configure) < 0) {
     return -1;
   }
