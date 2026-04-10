@@ -1,3 +1,17 @@
+/**
+ * @file can.c
+ * @brief CAN bus interface implementation.
+ *
+ * Opens SocketCAN raw sockets, starts a per-interface TX thread and
+ * handles RX in the main event-loop thread.  Value encoding/decoding
+ * supports little-endian integers of 1, 2 and 4 bytes as well as
+ * individual bit access within the 8-byte CAN data field.
+ *
+ * The TX thread wakes every IFACE_THREAD_PERIOD_US microseconds and:
+ *  - transmits any pending outbound frame whose @c send_time has elapsed;
+ *  - sends an NTP-synced timestamp frame on CAN ID 0x100 when
+ *    @c timestamp_period is non-zero and the period has elapsed.
+ */
 #include "can.h"
 #include "mqtt.h"
 #include "mb.h"
@@ -152,6 +166,17 @@ void can_update_fds(fd_set *fd_set, int *max_fd) {
   }
 }
 
+/**
+ * @brief Configure one CAN interface from a libconfuse section.
+ *
+ * Reads the interface name, timestamp period and send timeout, then
+ * recurses into each @c frame{} child section via frame_configure().
+ *
+ * @param cfg    The @c can{} section.
+ * @param ctx    Unused (NULL).
+ * @param child  Pre-allocated @c CAN_IFACE_T to populate.
+ * @return       0 on success, -1 on error.
+ */
 static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_IFACE_T *iface = (CAN_IFACE_T *) child;
 
@@ -169,6 +194,17 @@ static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
   return uvrgw_conf_config_childs(cfg, "frame", &iface->frames_count, (void **) &iface->frames, sizeof(CAN_FRAME_T), iface, frame_configure);
 }
 
+/**
+ * @brief Configure one CAN frame from a libconfuse section.
+ *
+ * Reads the CAN ID and direction, initialises the TX send buffer and mutex,
+ * then recurses into each @c value{} child via value_configure().
+ *
+ * @param cfg    The @c frame{} section.
+ * @param ctx    Parent @c CAN_IFACE_T pointer.
+ * @param child  Pre-allocated @c CAN_FRAME_T to populate.
+ * @return       0 on success, -1 on error.
+ */
 static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_FRAME_T *frame = (CAN_FRAME_T *) child;
 
@@ -184,6 +220,18 @@ static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
   return uvrgw_conf_config_childs(cfg, "value", &frame->values_count, (void **) &frame->values, sizeof(CAN_VAL_T), frame, value_configure);
 }
 
+/**
+ * @brief Configure one CAN value from a libconfuse section.
+ *
+ * Reads the value name (section title), type, byte/bit position and
+ * scale/offset factors.  Validates that the value fits within the
+ * 8-byte CAN data field.  Obtains or creates the named dispatcher.
+ *
+ * @param cfg    The @c value{} section.
+ * @param ctx    Parent @c CAN_FRAME_T pointer.
+ * @param child  Pre-allocated @c CAN_VAL_T to populate.
+ * @return       0 on success, -1 on error.
+ */
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_VAL_T *val = (CAN_VAL_T *) child;
 
@@ -238,6 +286,15 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
+/**
+ * @brief Open the SocketCAN socket and start the TX thread for one interface.
+ *
+ * Creates a PF_CAN / SOCK_RAW socket, resolves the interface index, binds
+ * the socket, and starts the iface_thread() TX thread.
+ *
+ * @param iface  Interface to start.
+ * @return       0 on success, -1 on error (socket is closed on failure).
+ */
 static int iface_startup(CAN_IFACE_T *iface) {
   // open socket
   if ((iface->can_fd = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
@@ -282,6 +339,18 @@ fail0:
   return -1;
 }
 
+/**
+ * @brief Process a single received CAN frame for one interface.
+ *
+ * Called from can_handler() when the interface socket is readable.
+ * Reads one standard CAN frame, matches it against all IN-direction
+ * frame definitions and dispatches matching values after applying
+ * scale and offset.  Extended, RTR and error frames are silently ignored.
+ *
+ * @param fd_set  The read fd_set from select().
+ * @param iface   Interface to service.
+ * @return        0 on success, -1 on socket read error.
+ */
 static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
   struct can_frame rcvd_frame;
   ssize_t count;
@@ -359,6 +428,15 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
   return 0;
 }
 
+/**
+ * @brief TX thread entry point for one CAN interface.
+ *
+ * Loops at IFACE_THREAD_PERIOD_US intervals calling iface_task() until
+ * @c thread_running is cleared by can_shutdown().
+ *
+ * @param ptr  @c CAN_IFACE_T pointer cast to void *.
+ * @return     NULL.
+ */
 static void *iface_thread(void *ptr) {
   CAN_IFACE_T *iface = (CAN_IFACE_T *) ptr;
 
@@ -370,6 +448,15 @@ static void *iface_thread(void *ptr) {
   return NULL;
 }
 
+/**
+ * @brief Single TX iteration for one CAN interface.
+ *
+ * Sends the NTP timestamp frame if the period has elapsed, then checks
+ * all OUT-direction frames and transmits any whose @c send_time has expired.
+ *
+ * @param iface  Interface to service.
+ * @return       0 on success, -1 on socket write error.
+ */
 static int iface_task(CAN_IFACE_T *iface) {
   int64_t now;
   CAN_FRAME_T *frame;
@@ -414,6 +501,13 @@ static int iface_task(CAN_IFACE_T *iface) {
   return 0;
 }
 
+/**
+ * @brief Read a little-endian unsigned integer of @p len bytes from @p p.
+ *
+ * @param p    Pointer to the first (least-significant) byte.
+ * @param len  Number of bytes to read (1, 2 or 4).
+ * @return     Unsigned 32-bit value.
+ */
 static uint32_t read_value(const uint8_t *p, int len) {
   int i;
   uint32_t val;
@@ -426,6 +520,13 @@ static uint32_t read_value(const uint8_t *p, int len) {
   return val;
 }
 
+/**
+ * @brief Write a little-endian integer of @p len bytes to @p p.
+ *
+ * @param p    Destination pointer (least-significant byte first).
+ * @param len  Number of bytes to write (1, 2 or 4).
+ * @param val  Value to encode.
+ */
 static void write_value(uint8_t *p, int len, uint32_t val) {
   int i;
 
@@ -435,6 +536,19 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
   }
 }
 
+/**
+ * @brief Dispatch callback that encodes a value into the CAN TX buffer.
+ *
+ * Invoked by the value dispatcher when a value with the same name as an
+ * OUT-direction CAN value is received.  Applies the inverse of the
+ * scale/offset transform and writes the encoded bytes into the shared
+ * @c send_buf.  Sets @c send_time if not already armed, coalescing
+ * multiple updates within the @c send_timeout window.
+ *
+ * @param v  @c CAN_VAL_T pointer.
+ * @param f  Dispatched value.
+ * @return   0 on success.
+ */
 static int send_value(void *v, double f) {
   int64_t now;
   CAN_VAL_T *val = (CAN_VAL_T *) v;
@@ -491,6 +605,19 @@ static int send_value(void *v, double f) {
   return 0;
 }
 
+/**
+ * @brief Build and transmit an NTP-synced timestamp CAN frame.
+ *
+ * The frame uses CAN ID 0x100 with 6 data bytes:
+ *   - bytes 0–3: milliseconds since local midnight (little-endian uint32).
+ *   - bytes 4–5: days since 1984-01-01 (little-endian uint16).
+ *
+ * Only sent when ntp_check() confirms the local clock is synchronised.
+ *
+ * @param iface  Interface on which to send the frame.
+ * @return       1 on successful transmission, 0 if NTP not synced,
+ *               -1 on socket or time error.
+ */
 static int send_timestamp(CAN_IFACE_T *iface) {
   struct timeval tv;
   struct tm lt, tmp;
