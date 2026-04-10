@@ -1,3 +1,20 @@
+/**
+ * @file mb.c
+ * @brief Modbus master implementation (RTU and TCP).
+ *
+ * Provides polling threads for all configured Modbus masters.  Each
+ * thread wakes every MASTER_THREAD_PERIOD_US microseconds and calls
+ * master_task(), which advances through slaves and blocks in round-robin
+ * order, reads register blocks, dispatches values and flushes queued writes.
+ *
+ * Scale-factor support: an input block can declare one register as the
+ * scale factor source for another register.  The final dispatched value
+ * is raw × scale × 10^exponent + offset.
+ *
+ * Bitmask support: multiple values can share the same register offset;
+ * they all read from the same @c valbuf which is updated once per block
+ * read, and each extracts a different bit position.
+ */
 #include "mb.h"
 #include "mqtt.h"
 #include "can.h"
@@ -512,6 +529,16 @@ static void master_shutdown(MB_MASTER_T *master) {
   }
 }
 
+/**
+ * @brief Polling thread entry point for one Modbus master.
+ *
+ * Loops at MASTER_THREAD_PERIOD_US intervals, calling master_task()
+ * whenever the @c next_transaction timer has expired, until
+ * @c thread_running is cleared by master_shutdown().
+ *
+ * @param ptr  @c MB_MASTER_T pointer cast to void *.
+ * @return     NULL.
+ */
 static void *master_thread(void *ptr) {
   MB_MASTER_T *master = (MB_MASTER_T *) ptr;
   int64_t now;
@@ -529,6 +556,18 @@ static void *master_thread(void *ptr) {
   return NULL;
 }
 
+/**
+ * @brief Single poll iteration for one master.
+ *
+ * Advances through slaves and processes one read and one write
+ * per call.  Moves to the next slave once all blocks and pending
+ * writes for the current slave are exhausted.
+ *
+ * @param master  Master to service.
+ * @param now     Current monotonic timestamp (ms).
+ * @return        Positive if a Modbus transaction was issued,
+ *                0 if nothing was done, -1 on error.
+ */
 static int master_task(MB_MASTER_T *master, int64_t now) {
   MB_SLAVE_T *slave;
   int ret;
@@ -562,6 +601,17 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
   return 0;
 }
 
+/**
+ * @brief Read one input block from @p slave if the poll timer has expired.
+ *
+ * Reads the next un-read IN-direction block; if all blocks have been
+ * read, resets the poll timer.
+ *
+ * @param slave  Slave to service.
+ * @param now    Current monotonic timestamp (ms).
+ * @return       1 if a read was performed, 0 if nothing was done,
+ *               -1 on Modbus error.
+ */
 static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
   MB_BLOCK_T *blk;
 
@@ -607,6 +657,17 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
   return 1;
 }
 
+/**
+ * @brief Write one pending output value from @p slave's pending list.
+ *
+ * Walks @c value_out_curr until a value with @c write_pending is found,
+ * then calls write_execute().
+ *
+ * @param slave  Slave to service.
+ * @param now    Current monotonic timestamp (ms, unused but kept for API consistency).
+ * @return       1 if a write was performed, 0 if nothing was pending,
+ *               -1 on Modbus error.
+ */
 static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
   int ret;
   MB_SLAVE_VAL_T *val;
@@ -627,6 +688,15 @@ static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
   }
 }
 
+/**
+ * @brief Read all coils or discrete inputs of a block and dispatch values.
+ *
+ * Calls modbus_read_input_bits() or modbus_read_bits() as appropriate
+ * and dispatches each BIT-type value.
+ *
+ * @param blk  Block to read.
+ * @return     0 on success, -1 on Modbus error.
+ */
 static int read_block_bits(MB_BLOCK_T *blk) {
   MB_SLAVE_T *slave = blk->slave;
   MB_MASTER_T *master = slave->master;
@@ -660,6 +730,16 @@ static int read_block_bits(MB_BLOCK_T *blk) {
   return 0;
 }
 
+/**
+ * @brief Read all holding or input registers of a block and dispatch values.
+ *
+ * Calls modbus_read_input_registers() or modbus_read_registers() as
+ * appropriate, then calls dispatch_value() for each value.  Scale-factor
+ * values are applied as a decimal exponent (10^exponent) before dispatch.
+ *
+ * @param blk  Block to read.
+ * @return     0 on success, -1 on Modbus error.
+ */
 static int read_block_registers(MB_BLOCK_T *blk) {
   MB_SLAVE_T *slave = blk->slave;
   MB_MASTER_T *master = slave->master;
@@ -697,6 +777,17 @@ static int read_block_registers(MB_BLOCK_T *blk) {
   return 0;
 }
 
+/**
+ * @brief Convert a raw register value and dispatch it via the value dispatcher.
+ *
+ * Applies the scale factor @p sf, the value's own @c scale and @c val_offset
+ * for signed/unsigned types.  For bitmask values, extracts the configured
+ * bit position from @p v.
+ *
+ * @param dpval  Value descriptor.
+ * @param v      Raw 16-bit register value.
+ * @param sf     Scale-factor multiplier (1.0 if no scale-factor register).
+ */
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
   switch (dpval->type) {
     case UVRGW_CONF_MB_TYPE_SIGNED:
@@ -711,6 +802,17 @@ static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
   }
 }
 
+/**
+ * @brief Dispatch callback that queues a value for Modbus write.
+ *
+ * Thread-safe: acquires @c write_lock before updating @c write_value
+ * and @c write_pending.  The actual Modbus write is performed by
+ * write_execute() in the polling thread.
+ *
+ * @param v  @c MB_SLAVE_VAL_T pointer.
+ * @param f  Value to write.
+ * @return   0.
+ */
 static int write_schedule(void *v, double f) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) v;
   MB_SLAVE_T *slave = val->block->slave;
@@ -724,6 +826,17 @@ static int write_schedule(void *v, double f) {
   return 0;
 }
 
+/**
+ * @brief Execute a pending Modbus write for one value.
+ *
+ * Atomically reads and clears @c write_pending, then issues the
+ * appropriate modbus_write_bit() or modbus_write_register() call.
+ * For bitmask values the shared @c valbuf is updated before writing.
+ *
+ * @param val  Value to write.
+ * @return     1 if a write was issued, 0 if nothing was pending,
+ *             -1 on Modbus error.
+ */
 static int write_execute(MB_SLAVE_VAL_T *val) {
   MB_SLAVE_T *slave = val->block->slave;
   MB_MASTER_T *master = slave->master;

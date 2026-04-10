@@ -1,3 +1,13 @@
+/**
+ * @file ntp_check.c
+ * @brief NTP synchronisation check implementation.
+ *
+ * Based on ntpstat (c) 2001 G. Richard Keech.
+ *
+ * Communicates with the local NTP daemon using an NTP mode-6 control
+ * message (the same protocol used by the ntpq utility).  See RFC 1305
+ * section 3.2 for the message format details.
+ */
 // this code is based on ntpstat (c) 2001 G.Richard Keech
 
 #include "ntp_check.h"
@@ -36,34 +46,42 @@
 
 // RFC-1305 NTP control message format
 #pragma pack(push, 1)
+/**
+ * @brief RFC-1305 NTP mode-6 control message.
+ *
+ * Both the request sent to and the response received from the NTP daemon
+ * use this layout.  Only the fields relevant to clock-sync checking are
+ * inspected in the response: @c version, @c mode, @c opcode, @c response,
+ * @c error, @c more, @c leap_indicator, @c clksrc, and @c payload.
+ */
 typedef struct {
-  // byte 1
-  unsigned char mode : 3;
-  unsigned char version : 3;
-  unsigned char dummy : 2;
+  /* byte 1 */
+  unsigned char mode : 3;           /**< NTP mode (6 = control message). */
+  unsigned char version : 3;        /**< NTP version (2 for this implementation). */
+  unsigned char dummy : 2;          /**< Reserved / unused bits. */
 
-  // byte 2
-  unsigned char opcode : 5;
-  unsigned char more : 1;
-  unsigned char error : 1;
-  unsigned char response : 1;
+  /* byte 2 */
+  unsigned char opcode : 5;         /**< Control opcode (2 = read variables). */
+  unsigned char more : 1;           /**< More-fragments flag. */
+  unsigned char error : 1;          /**< Error flag set by server on failure. */
+  unsigned char response : 1;       /**< Set by server to indicate this is a reply. */
 
-  unsigned short sequence;
+  unsigned short sequence;          /**< Sequence number for matching replies. */
 
-  // status 1
-  unsigned char clksrc : 6;
-  unsigned char leap_indicator : 2;
+  /* status 1 */
+  unsigned char clksrc : 6;         /**< Clock source (see CLKSRC_T). */
+  unsigned char leap_indicator : 2; /**< Leap-indicator bits; 3 means unsynchronised. */
 
-  // status 2
-  unsigned char st_event : 4;
-  unsigned char st_count : 4;
+  /* status 2 */
+  unsigned char st_event : 4;       /**< System event code. */
+  unsigned char st_count : 4;       /**< System event counter. */
 
-  unsigned short association_id;
-  unsigned short offset;
-  unsigned short count;
+  unsigned short association_id;    /**< Association ID (0 for system status). */
+  unsigned short offset;            /**< Payload data offset. */
+  unsigned short count;             /**< Payload data length. */
 
-  char payload[468];
-  char auth[96];
+  char payload[468];                /**< ASCII variable string from the daemon. */
+  char auth[96];                    /**< Optional authenticator (not used). */
 } NTPMSG_T;
 #pragma pack(pop)
 
@@ -89,6 +107,15 @@ static const char REFID[] = "refid=";
 
 //-------------------------------------------------------------------------
 
+/**
+ * @brief Check whether the local NTP daemon is synchronised.
+ *
+ * Sends an NTP mode-6 "read variables" request to 127.0.0.1:123,
+ * waits up to 1 second for a reply, then validates the response fields.
+ *
+ * @return @c true when the NTP clock is synchronised, @c false on any
+ *         error, timeout, or when the daemon reports an unsynchronised state.
+ */
 bool ntp_check(void) {
   int sync_ok = false;           //  return code
   struct sockaddr_in sock;

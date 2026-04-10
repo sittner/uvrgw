@@ -1,3 +1,16 @@
+/**
+ * @file uvrgw_conf.c
+ * @brief Configuration file parsing and value dispatch implementation.
+ *
+ * Uses libconfuse to parse the configuration file into a tree of sections.
+ * Each top-level section (mqtt, json, can, modbus_rtu, modbus_tcp) is
+ * forwarded to the corresponding subsystem's configure() function.
+ *
+ * After configuration the dispatcher linked list is fully populated and
+ * the per-entry callback arrays are allocated.  The register_disp_cbs
+ * functions of each subsystem then fill in the callback arrays for all
+ * output values.
+ */
 #include <uvrgw_conf.h>
 
 #include "can.h"
@@ -305,6 +318,12 @@ fail:
   return -1;
 }
 
+/**
+ * @brief Load configuration, configure all subsystems and set up value dispatch.
+ *
+ * @param file  Path to the libconfuse configuration file.
+ * @return      0 on success, -1 on error.
+ */
 int uvrgw_conf_load(const char *file) {
   cfg_t *cfg;
   int err;
@@ -367,6 +386,9 @@ fail0:
   return -1;
 }
 
+/**
+ * @brief Unconfigure all subsystems and free the dispatcher linked list.
+ */
 void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
@@ -386,6 +408,18 @@ void uvrgw_conf_cleanup(void) {
   }
 }
 
+/**
+ * @brief Allocate child data and iterate over all child sections, calling @p cccb.
+ *
+ * @param cfg    Parent section.
+ * @param name   Child section name.
+ * @param count  Output: number of children.
+ * @param data   Output: pointer to allocated array.
+ * @param size   Byte size of each element.
+ * @param ctx    Context forwarded to @p cccb.
+ * @param cccb   Per-child configuration callback.
+ * @return       0 on success, -1 on error.
+ */
 int uvrgw_conf_config_childs(cfg_t *cfg, const char *name, int *count, void **data, int size, void *ctx, UVRGW_CONF_CONFIG_CHILD_CB cccb) {
   int n, i;
   void *child;
@@ -416,6 +450,12 @@ int uvrgw_conf_config_childs(cfg_t *cfg, const char *name, int *count, void **da
   return 0;
 }
 
+/**
+ * @brief Duplicate a string, treating NULL input as a valid no-op.
+ *
+ * @param s  String to duplicate, or NULL.
+ * @return   New copy, or NULL if @p s is NULL.
+ */
 char *uvrgw_conf_strdup(const char *s) {
   if (s == NULL) {
     return NULL;
@@ -424,6 +464,13 @@ char *uvrgw_conf_strdup(const char *s) {
   return strdup(s);
 }
 
+/**
+ * @brief Look up or create the dispatcher node for @p name.
+ *
+ * @param name      Value name.
+ * @param alloc_cb  If true, increment the output callback counter.
+ * @return          Dispatcher node pointer.
+ */
 UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool alloc_cb) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *last;
@@ -467,6 +514,14 @@ void static init_dispatcher() {
   }
 }
 
+/**
+ * @brief Register an output callback in a dispatcher's preallocated slot.
+ *
+ * @param dp   Dispatcher.
+ * @param val  Source value pointer.
+ * @param cb   Callback function.
+ * @return     0 on success, -1 if slots are exhausted.
+ */
 int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_CONF_DISPATCH_CB cb) {
   UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;
 
@@ -483,6 +538,13 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
   return 0;
 }
 
+/**
+ * @brief Fire all output callbacks for a dispatcher, excluding the source.
+ *
+ * @param dp   Dispatcher.
+ * @param val  Source value pointer (excluded from delivery).
+ * @param f    Dispatched value.
+ */
 void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
   int i;
   UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;

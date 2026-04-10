@@ -1,3 +1,18 @@
+/**
+ * @file mqtt.c
+ * @brief MQTT client implementation using libmosquitto.
+ *
+ * Each configured MQTT connection creates a libmosquitto instance with its
+ * own background thread.  The module registers three libmosquitto callbacks:
+ *  - connect_callback: marks the session as connected, publishes "ON" to
+ *    the state topic and subscribes to all IN-direction value topics.
+ *  - disconnect_callback: marks the session as disconnected.
+ *  - message_callback: receives messages on subscribed topics, converts
+ *    the payload to a double and dispatches it via the value system.
+ *
+ * Output values are published by send_value(), which is registered as a
+ * dispatch callback for all OUT-direction values.
+ */
 #include "mqtt.h"
 #include "can.h"
 #include "mb.h"
@@ -20,6 +35,17 @@ static int send_value(void *v, double f);
 static int conn_startup(MQTT_CONN_T *conn);
 static void conn_shutdown(MQTT_CONN_T *conn);
 
+/**
+ * @brief libmosquitto connection callback.
+ *
+ * Called by the mosquitto background thread when a broker connection is
+ * established.  Publishes "ON" to the state topic and subscribes to all
+ * IN-direction value topics.
+ *
+ * @param mosq    libmosquitto handle.
+ * @param obj     User data pointer (@c MQTT_CONN_T *).
+ * @param result  Connection result code (0 = success).
+ */
 static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
   MQTT_VAL_T *val;
@@ -38,12 +64,33 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   }
 }
 
+/**
+ * @brief libmosquitto disconnection callback.
+ *
+ * Called when the broker connection is lost or deliberately closed.
+ *
+ * @param mosq    libmosquitto handle.
+ * @param obj     User data pointer (@c MQTT_CONN_T *).
+ * @param result  Disconnect reason code.
+ */
 static void disconnect_callback(struct mosquitto *mosq, void *obj, int result) {
   MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
 
   conn->connected = false;
 }
 
+/**
+ * @brief libmosquitto message received callback.
+ *
+ * Called when a subscribed topic delivers a message.  Searches for a
+ * matching IN-direction value, converts the payload to a double
+ * (interpreting "ON"/"CLOSED" as 1.0 for switch/contact types) and
+ * dispatches it via the value system.
+ *
+ * @param mosq  libmosquitto handle.
+ * @param obj   User data pointer (@c MQTT_CONN_T *).
+ * @param msg   Received message (topic, payload, payloadlen, …).
+ */
 static void message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg) {
   MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
   MQTT_VAL_T *val;
@@ -259,6 +306,16 @@ fail0:
   return -1;
 }
 
+/**
+ * @brief Create a mosquitto instance, configure callbacks and start its loop thread.
+ *
+ * Sets up credentials, last-will and callbacks, then calls
+ * mosquitto_connect_async() (initial failure is non-fatal; libmosquitto will
+ * retry) and mosquitto_loop_start() to launch the background thread.
+ *
+ * @param conn  Connection to start.
+ * @return      0 on success, -1 on error.
+ */
 static int conn_startup(MQTT_CONN_T *conn) {
   conn->mosq = mosquitto_new(conn->client_id, true, conn);
   if (conn->mosq == NULL) {
@@ -315,6 +372,12 @@ void mqtt_shutdown(void) {
   mosquitto_lib_cleanup();
 }
 
+/**
+ * @brief Publish "OFF" to the state topic (if configured), disconnect and destroy
+ *        the mosquitto instance.
+ *
+ * @param conn  Connection to shut down.
+ */
 static void conn_shutdown(MQTT_CONN_T *conn) {
   if (conn->mosq != NULL) {
     if (conn->connected) {
@@ -328,6 +391,18 @@ static void conn_shutdown(MQTT_CONN_T *conn) {
   }
 }
 
+/**
+ * @brief Dispatch callback that publishes a value to the MQTT broker.
+ *
+ * Formats the value according to the value's @c type and @c fmt fields and
+ * calls mosquitto_publish().  For switch values publishes "ON"/"OFF"; for
+ * contact values publishes "CLOSED"/"OPEN"; for number values uses snprintf
+ * with the configured format string.
+ *
+ * @param v  @c MQTT_VAL_T pointer.
+ * @param f  Dispatched value.
+ * @return   0 on success, -1 on publish error.
+ */
 static int send_value(void *v, double f) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) v;
   MQTT_CONN_T *conn = val->conn;

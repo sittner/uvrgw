@@ -1,3 +1,19 @@
+/**
+ * @file main.c
+ * @brief uvrgw entry point and main event loop.
+ *
+ * Parses the command-line arguments, loads the configuration file,
+ * starts all protocol subsystems (CAN, Modbus, MQTT, REST) and then
+ * enters a blocking select()-based event loop.
+ *
+ * The loop monitors:
+ *   - An eventfd that is written by the signal handler on SIGINT/SIGTERM
+ *     to request a clean shutdown.
+ *   - All CAN socket file descriptors for incoming frames.
+ *
+ * On exit (signal or fatal error) all subsystems are shut down in reverse
+ * order and all resources are released.
+ */
 #include <stdint.h>
 
 #include "uvrgw_conf.h"
@@ -21,6 +37,16 @@
 
 static int exit_fd;
 
+/**
+ * @brief Signal handler for SIGINT, SIGTERM and SIGHUP.
+ *
+ * SIGINT and SIGTERM write to @c exit_fd, which causes the main
+ * select() loop to wake up and perform a clean shutdown.
+ * SIGHUP is accepted but currently has no effect (reserved for
+ * future configuration-reload support).
+ *
+ * @param sig  Signal number received.
+ */
 static void sighandler(int sig) {
   uint64_t u = 1;
 
@@ -36,6 +62,25 @@ static void sighandler(int sig) {
   }
 }
 
+/**
+ * @brief uvrgw daemon entry point.
+ *
+ * Usage: uvrgw [config-file]
+ *
+ * If no config file path is supplied on the command line the default
+ * path @c /etc/uvrgw.conf is used.
+ *
+ * Startup sequence:
+ *  1. Create exit eventfd and install signal handlers.
+ *  2. Load and parse the configuration file (uvrgw_conf_load()).
+ *  3. Start CAN, Modbus, MQTT and REST subsystems.
+ *  4. Enter select() event loop until shutdown is requested.
+ *  5. Shut down all subsystems and free resources.
+ *
+ * @param argc  Argument count.
+ * @param argv  Argument vector; argv[1] is an optional config-file path.
+ * @return      0 on clean exit, 1 on error.
+ */
 int main(int argc, char **argv)
 {
   int ret = 1;

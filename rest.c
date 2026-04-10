@@ -1,3 +1,17 @@
+/**
+ * @file rest.c
+ * @brief REST/JSON client implementation using libcurl and json-c.
+ *
+ * Each connection runs in a dedicated thread (conn_thread) that wakes
+ * every CONN_THREAD_PERIOD_US microseconds, checks whether the poll
+ * interval has elapsed, fetches the URL with rest_get_json() and then
+ * iterates over all configured value paths to extract and dispatch values.
+ *
+ * JSON is parsed incrementally via the json_tokener streaming API so
+ * that large responses do not require buffering the entire body before
+ * parsing.  Only the first complete JSON object is used; any trailing
+ * data is ignored.
+ */
 #include "rest.h"
 #include "can.h"
 #include "mb.h"
@@ -160,6 +174,15 @@ void rest_shutdown(void) {
   curl_global_cleanup();
 }
 
+/**
+ * @brief Polling thread entry point for one REST connection.
+ *
+ * Loops at CONN_THREAD_PERIOD_US intervals calling conn_task() until
+ * @c thread_running is cleared by rest_shutdown().
+ *
+ * @param ptr  @c REST_CONN_T pointer cast to void *.
+ * @return     NULL.
+ */
 static void *conn_thread(void *ptr) {
   REST_CONN_T *conn = (REST_CONN_T *) ptr;
 
@@ -171,6 +194,16 @@ static void *conn_thread(void *ptr) {
   return NULL;
 }
 
+/**
+ * @brief HTTP GET the configured URL, parse JSON and dispatch all values.
+ *
+ * Called from conn_thread().  Checks the poll timer; if elapsed, fetches
+ * the URL, iterates over all value path definitions, extracts and converts
+ * numeric values and dispatches them.
+ *
+ * @param conn  Connection to service.
+ * @return      0 (errors are logged but not fatal at the caller level).
+ */
 static int conn_task(REST_CONN_T *conn) {
   int64_t now;
   REST_VAL_T *val;
@@ -226,6 +259,22 @@ static int conn_task(REST_CONN_T *conn) {
   return 0;
 }
 
+/**
+ * @brief Perform an HTTP GET request and return the parsed JSON object.
+ *
+ * Uses a libcurl easy handle with the json_tokener streaming callback.
+ * Sets the Accept header to "application/json" and applies optional
+ * Basic-Auth credentials and a millisecond timeout.
+ *
+ * The caller is responsible for releasing the returned object with
+ * json_object_put().
+ *
+ * @param url      URL to fetch.
+ * @param user     HTTP Basic-Auth username, or NULL.
+ * @param pwd      HTTP Basic-Auth password, or NULL.
+ * @param timeout  Request timeout in milliseconds.
+ * @return         Parsed json_object on success, NULL on error.
+ */
 static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout) {
   CURL *ch;
   REST_GET_STATE_T state = { .tok = NULL, .json = NULL } ;
@@ -315,6 +364,15 @@ static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb,
   return realsize;
 }
 
+/**
+ * @brief Navigate a JSON object tree using a dot-separated path string.
+ *
+ * Makes a mutable copy of @p path and delegates to the recursive helper.
+ *
+ * @param root  Root JSON object.
+ * @param path  Dot-separated path string (e.g. "sensors.0.temp").
+ * @return      The located json_object, or NULL if not found.
+ */
 static json_object *json_path_lookup(json_object *root, const char *path) {
   char *tmp;
   json_object *val;
