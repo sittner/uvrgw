@@ -371,6 +371,8 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  rest_unconfigure();
+  mqtt_unconfigure();
   can_unconfigure();
   mb_unconfigure();
 
@@ -460,7 +462,7 @@ void static init_dispatcher() {
   dp = disp;
   while (dp != NULL) {
     dp->value_cbs_pos = 0;
-    dp->value_cbs = calloc(dp->value_count, sizeof(UVRGW_CONF_VAL_DISPATCH_T));
+    dp->value_cbs = calloc(dp->value_count, sizeof(UVRGW_CONF_DISPATCH_CB_VAL_T));
     dp = dp->next;
   }
 }

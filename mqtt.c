@@ -150,6 +150,50 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (val->fmt != NULL) {
+    int conv_count = 0;
+    const char *p = val->fmt;
+    while (*p) {
+      if (*p == '%') {
+        p++;
+        if (*p == '%') {
+          p++;
+          continue;
+        }
+        if (*p == '\0') {
+          syslog(LOG_ERR, "mqtt value '%s' fmt contains trailing '%%'.", val->name);
+          return -1;
+        }
+        conv_count++;
+        while (*p == '-' || *p == '+' || *p == ' ' || *p == '0' || *p == '#') p++;
+        while (*p >= '0' && *p <= '9') p++;
+        if (*p == '.') {
+          p++;
+          while (*p >= '0' && *p <= '9') p++;
+        }
+        /* skip optional length modifiers: h, hh, l, ll, L */
+        if (*p == 'h') {
+          p++;
+          if (*p == 'h') p++;
+        } else if (*p == 'l') {
+          p++;
+          if (*p == 'l') p++;
+        } else if (*p == 'L') {
+          p++;
+        }
+        if (*p != 'f' && *p != 'e' && *p != 'E' && *p != 'g' && *p != 'G') {
+          syslog(LOG_ERR, "mqtt value '%s' fmt contains non-float conversion specifier.", val->name);
+          return -1;
+        }
+      }
+      p++;
+    }
+    if (conv_count != 1) {
+      syslog(LOG_ERR, "mqtt value '%s' fmt must contain exactly one conversion specifier.", val->name);
+      return -1;
+    }
+  }
+
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->dir == UVRGW_CONF_VAL_DIR_OUT));
 
   return 0;
