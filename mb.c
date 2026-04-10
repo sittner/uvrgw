@@ -31,7 +31,8 @@ static int master_rtu_configure(cfg_t *cfg, void *ctx, void *child);
 static int master_tcp_configure(cfg_t *cfg, void *ctx, void *child);
 static int master_configure(cfg_t *cfg, MB_MASTER_T *master);
 static int slave_configure(cfg_t *cfg, void *ctx, void *child);
-static MB_SLAVE_VAL_T *find_slave_value(MB_SLAVE_T *slave, const char *name);
+static int block_configure(cfg_t *cfg, void *ctx, void *child);
+static MB_SLAVE_VAL_T *find_block_value(MB_BLOCK_T *blk, const char *name);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static void register_disp_cbs_master(MB_MASTER_T *master);
 static void unconfigure_master(MB_MASTER_T *master);
@@ -45,10 +46,9 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now);
 static int slave_task_write(MB_SLAVE_T *slave, int64_t now);
 static int write_schedule(void *v, double f);
 static int write_execute(MB_SLAVE_VAL_T *val);
-static int read_bits(MB_SLAVE_VAL_T *grp);
-static int read_registers(MB_SLAVE_VAL_T *grp);
+static int read_block_bits(MB_BLOCK_T *blk);
+static int read_block_registers(MB_BLOCK_T *blk);
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf);
-static void dispatch_sf(MB_SLAVE_VAL_T *dpval, uint16_t v);
 
 void mb_init(void) {
   rtu_masters_count = 0;
@@ -117,184 +117,125 @@ static int master_configure(cfg_t *cfg, MB_MASTER_T *master) {
   return uvrgw_conf_config_childs(cfg, "slave", &master->slaves_count, (void **) &master->slaves, sizeof(MB_SLAVE_T), master, slave_configure);
 }
 
-static int value_reg_cmp(MB_SLAVE_VAL_T *a, MB_SLAVE_VAL_T *b) {
-  if (a->dir < b->dir) {
-    return -1;
-  }
-  if (a->dir > b->dir) {
-    return 1;
-  }
-
-  if (a->regtype < b->regtype) {
-    return -1;
-  }
-  if (a->regtype > b->regtype) {
-    return 1;
-  }
-
-  if (a->addr < b->addr) {
-    return -1;
-  }
-  if (a->addr > b->addr) {
-    return 1;
-  }
-
-  return 0;
-}
-
 static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_T *slave = (MB_SLAVE_T *) child;
-  MB_SLAVE_VAL_T *val, *cmp, *grp, *sf;
-  int val_idx;
-  int res;
 
   slave->master = (MB_MASTER_T *) ctx;
 
   slave->id = cfg_getint(cfg, "id");
   slave->interval = cfg_getint(cfg, "interval");
-  slave->max_req_regs = cfg_getint(cfg, "max_req_regs");
 
-  if (slave->max_req_regs > 0) {
-    slave->input_buf = calloc(slave->max_req_regs, sizeof(uint16_t));
-  }
+  return uvrgw_conf_config_childs(cfg, "block", &slave->blocks_count, (void **) &slave->blocks, sizeof(MB_BLOCK_T), slave, block_configure);
+}
 
-  if (uvrgw_conf_config_childs(cfg, "value", &slave->values_count, (void **) &slave->values, sizeof(MB_SLAVE_VAL_T), slave, value_configure) < 0) {
+static int block_configure(cfg_t *cfg, void *ctx, void *child) {
+  MB_BLOCK_T *blk = (MB_BLOCK_T *) child;
+  MB_SLAVE_T *slave = (MB_SLAVE_T *) ctx;
+  MB_SLAVE_VAL_T *val, *sf, *search;
+  int val_idx, search_idx;
+
+  blk->slave = slave;
+  blk->dir = cfg_getint(cfg, "dir");
+  blk->regtype = cfg_getint(cfg, "regtype");
+  blk->addr = cfg_getint(cfg, "addr");
+  blk->count = cfg_getint(cfg, "count");
+
+  if (blk->dir < 0) {
+    syslog(LOG_ERR, "modbus block dir not given.");
     return -1;
   }
 
-  // order values by dir/regtype/address
-  for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
-    // initialize list
-    if (slave->values_head == NULL) {
-      slave->values_head = slave->values;
-      slave->values_tail = slave->values;
-      continue;
-    }
-
-    // search for place to insert
-    for (res = 0, cmp = slave->values_head; cmp != NULL; cmp = cmp->next) {
-      res = value_reg_cmp(cmp, val);
-      if (res >= 0) {
-        break;
-      }
-    }
-
-    // check for same reg
-    if (res == 0) {
-      val->same_base = cmp;
-      val->same_reg = cmp->same_reg;
-      cmp->same_reg = val;
-      continue;
-    }
-    val->same_base = val;
-
-    // insert into ordered list
-    if (cmp != NULL) {
-      if (cmp->prev == NULL) {
-        slave->values_head = val;
-      } else {
-        cmp->prev->next = val;
-      }
-      val->prev = cmp->prev;
-      val->next = cmp;
-      cmp->prev = val;
-      continue;
-    }
-
-    // append to ordered list
-    cmp = slave->values_tail;
-    cmp->next = val;
-    val->prev = cmp;
-    val->next = NULL;
-    slave->values_tail = val;
+  if (blk->regtype < 0) {
+    syslog(LOG_ERR, "modbus block regtype not given.");
+    return -1;
   }
 
-  // build request groups
-  for (val_idx = 0, cmp = NULL, grp = NULL, val = slave->values_head; val != NULL; cmp = val, val = val->next, val_idx++) {
-    // process inputs only
-    if (val->dir != UVRGW_CONF_VAL_DIR_IN) {
-      continue;
-    }
-
-    // add to group list
-    if (grp == NULL || val->regtype != cmp->regtype || val->addr != (cmp->addr + 1) || val_idx >= slave->max_req_regs) {
-      val_idx = 0;
-      val->in_group_index = 0;
-      if (grp == NULL) {
-        slave->in_group_head = val;
-      } else {
-        grp->in_group_next = val;
-      }
-      grp = val;
-      grp->in_group_count = 1;
-      continue;
-    }
-
-    // add to group
-    val->in_group_index = val_idx;
-    val->in_group_same = grp->in_group_same;
-    grp->in_group_same = val;
-    grp->in_group_count++;
+  if (blk->addr < 0) {
+    syslog(LOG_ERR, "modbus block addr not given.");
+    return -1;
   }
 
-  // resolve scale factor relations
-  for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
-    // process only values with scale factor name
+  if (blk->count <= 0) {
+    syslog(LOG_ERR, "modbus block count not given or invalid.");
+    return -1;
+  }
+
+  if (uvrgw_conf_config_childs(cfg, "value", &blk->values_count, (void **) &blk->values, sizeof(MB_SLAVE_VAL_T), blk, value_configure) < 0) {
+    return -1;
+  }
+
+  // resolve scale factor references and validate
+  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
     if (val->sf_name == NULL) {
       continue;
     }
 
-    // search scale factor source value
-    sf = find_slave_value(slave, val->sf_name);
+    sf = find_block_value(blk, val->sf_name);
     if (sf == NULL) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' not found.", val->sf_name);
+      syslog(LOG_ERR, "modbus scale_factor value '%s' not found in same block.", val->sf_name);
       return -1;
     }
 
-    // check value type
     if (sf->sf_name != NULL) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' must not be scale_factor dependent by it self.", val->sf_name);
-      return -1;
-    }
-    if (sf->dir != UVRGW_CONF_VAL_DIR_IN) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' must be an input.", val->sf_name);
-      return -1;
-    }
-    if (sf->type != UVRGW_CONF_MB_TYPE_SIGNED) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' must be an signed value.", val->sf_name);
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must not itself have a scale_factor.", val->sf_name);
       return -1;
     }
 
-    // add to destination chain of scale_factor input value
-    val->sf_next = sf->sf_dest;
-    sf->sf_dest = val;
+    if (blk->dir != UVRGW_CONF_VAL_DIR_IN) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must be in an input block.", val->sf_name);
+      return -1;
+    }
+
+    if (sf->type != UVRGW_CONF_MB_TYPE_SIGNED) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must be a signed value.", val->sf_name);
+      return -1;
+    }
+
+    if (sf->offset < 0 || sf->offset >= blk->count) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' offset out of range.", val->sf_name);
+      return -1;
+    }
+
+    val->sf_source = sf;
   }
 
-  // build output list
-  for (val = slave->values_head; val != NULL; val = val->next) {
-    // process outputs only
-    if (val->dir != UVRGW_CONF_VAL_DIR_OUT) {
-      continue;
+  // validate value offsets and resolve bitmask_base
+  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+    if (val->offset < 0 || val->offset >= blk->count) {
+      syslog(LOG_ERR, "modbus value '%s' offset %d out of range [0, %d).", val->name, val->offset, blk->count);
+      return -1;
     }
 
-    // input registers are read only
-    if (val->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || val->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
-      continue;
+    // for bitmask values, find the first value at the same offset (shared valbuf)
+    if (val->type == UVRGW_CONF_MB_TYPE_BITMASK) {
+      val->bitmask_base = val;
+      for (search = blk->values, search_idx = 0; search_idx < blk->values_count; search++, search_idx++) {
+        if (search->offset == val->offset && search->type == UVRGW_CONF_MB_TYPE_BITMASK) {
+          val->bitmask_base = search;
+          break;
+        }
+      }
     }
+  }
 
-    // add to list
-    val->value_out_next = slave->value_out_head;
-    slave->value_out_head = val;
+  // build output value list
+  if (blk->dir == UVRGW_CONF_VAL_DIR_OUT &&
+      blk->regtype != UVRGW_CONF_MB_REG_TYPE_INBIT &&
+      blk->regtype != UVRGW_CONF_MB_REG_TYPE_INREG) {
+    for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+      val->value_out_next = slave->value_out_head;
+      slave->value_out_head = val;
+    }
   }
 
   return 0;
 }
 
-static MB_SLAVE_VAL_T *find_slave_value(MB_SLAVE_T *slave, const char *name) {
+static MB_SLAVE_VAL_T *find_block_value(MB_BLOCK_T *blk, const char *name) {
   MB_SLAVE_VAL_T *val;
   int val_idx;
 
-  for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
+  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
     if (strcmp(val->name, name) == 0) {
       return val;
     }
@@ -306,32 +247,30 @@ static MB_SLAVE_VAL_T *find_slave_value(MB_SLAVE_T *slave, const char *name) {
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) child;
 
-  val->slave = (MB_SLAVE_T *) ctx;
+  val->block = (MB_BLOCK_T *) ctx;
 
   val->name = uvrgw_conf_strdup(cfg_title(cfg));
   val->sf_name = uvrgw_conf_strdup(cfg_getstr(cfg, "scale_factor"));
-  val->dir = cfg_getint(cfg, "dir");
-  val->regtype = cfg_getint(cfg, "regtype");
-  val->addr = cfg_getint(cfg, "addr");
+  val->offset = cfg_getint(cfg, "offset");
   val->type = cfg_getint(cfg, "type");
   val->pos = cfg_getint(cfg, "pos");
   val->scale = cfg_getfloat(cfg, "scale");
-  val->offset = cfg_getfloat(cfg, "offset");
+  val->val_offset = cfg_getfloat(cfg, "offset_val");
 
   // check value type
   if (val->sf_name != NULL) {
-    if (val->dir != UVRGW_CONF_VAL_DIR_IN) {
+    if (val->block->dir != UVRGW_CONF_VAL_DIR_IN) {
       syslog(LOG_ERR, "modbus value scale_factor is only allowed for inputs.");
       return -1;
     }
 
     if (val->type != UVRGW_CONF_MB_TYPE_SIGNED && val->type != UVRGW_CONF_MB_TYPE_UNSIGNED) {
-      syslog(LOG_ERR, "modbus value scale_factor is only allowed for singned or unsigned values.");
+      syslog(LOG_ERR, "modbus value scale_factor is only allowed for signed or unsigned values.");
       return -1;
     }
   }
 
-  val->disp = uvrgw_conf_get_dispatcher(val->name, (val->dir == UVRGW_CONF_VAL_DIR_OUT));
+  val->disp = uvrgw_conf_get_dispatcher(val->name, (val->block->dir == UVRGW_CONF_VAL_DIR_OUT));
 
   return 0;
 }
@@ -353,13 +292,17 @@ void mb_register_disp_cbs(void) {
 static void register_disp_cbs_master(MB_MASTER_T *master) {
   MB_SLAVE_T *slave;
   int slave_idx;
+  MB_BLOCK_T *blk;
+  int blk_idx;
   MB_SLAVE_VAL_T *val;
   int val_idx;
 
   for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
-    for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
-      if (val->dir == UVRGW_CONF_VAL_DIR_OUT) {
-        uvrgw_conf_register_disp_cb(val->disp, val, write_schedule);
+    for (blk = slave->blocks, blk_idx = 0; blk_idx < slave->blocks_count; blk++, blk_idx++) {
+      for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+        if (blk->dir == UVRGW_CONF_VAL_DIR_OUT) {
+          uvrgw_conf_register_disp_cb(val->disp, val, write_schedule);
+        }
       }
     }
   }
@@ -386,16 +329,20 @@ void mb_unconfigure(void) {
 static void unconfigure_master(MB_MASTER_T *master) {
   MB_SLAVE_T *slave;
   int slave_idx;
+  MB_BLOCK_T *blk;
+  int blk_idx;
   MB_SLAVE_VAL_T *val;
   int val_idx;
 
   for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
-    for (val = slave->values, val_idx = 0; val_idx < slave->values_count; val++, val_idx++) {
-      free((void *) val->name);
-      free((void *) val->sf_name);
+    for (blk = slave->blocks, blk_idx = 0; blk_idx < slave->blocks_count; blk++, blk_idx++) {
+      for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+        free((void *) val->name);
+        free((void *) val->sf_name);
+      }
+      free(blk->values);
     }
-    free(slave->values);
-    free(slave->input_buf);
+    free(slave->blocks);
   }
 
   pthread_mutex_destroy(&master->write_lock);
@@ -589,7 +536,7 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
     }
 
     // all slave IOs done: reset task state and go to next
-    slave->in_group_curr = slave->in_group_head;
+    slave->block_read_idx = 0;
     slave->value_out_curr = slave->value_out_head;
     (master->slave_curr_idx)++;
   }
@@ -602,36 +549,44 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
 }
 
 static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
-  MB_SLAVE_VAL_T *grp;
+  MB_BLOCK_T *blk;
 
   // check poll timer
   if (slave->next_poll > now) {
     return 0;
   }
 
-  // get current group
-  grp = slave->in_group_curr;
-  if (grp == NULL) {
-    slave->next_poll =  now + slave->interval;
+  // find next input block
+  while (slave->block_read_idx < slave->blocks_count) {
+    blk = &slave->blocks[slave->block_read_idx];
+    if (blk->dir == UVRGW_CONF_VAL_DIR_IN) {
+      break;
+    }
+    slave->block_read_idx++;
+  }
+
+  // all input blocks done
+  if (slave->block_read_idx >= slave->blocks_count) {
+    slave->next_poll = now + slave->interval;
     return 0;
   }
 
-  // read registers
-  if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || grp->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
-    if (read_bits(grp) < 0) {
-      syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d). Error %d.", slave->id, grp->addr, grp->in_group_count, errno);
-      slave->next_poll =  now + slave->interval;
+  // read registers or bits
+  if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
+    if (read_block_bits(blk) < 0) {
+      syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, errno);
+      slave->next_poll = now + slave->interval;
       return -1;
     }
   } else {
-    if (read_registers(grp) < 0) {
-      syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d). Error %d.", slave->id, grp->addr, grp->in_group_count, errno);
-      slave->next_poll =  now + slave->interval;
+    if (read_block_registers(blk) < 0) {
+      syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, errno);
+      slave->next_poll = now + slave->interval;
       return -1;
     }
   }
 
-  slave->in_group_curr = grp->in_group_next;
+  slave->block_read_idx++;
 
   return 1;
 }
@@ -656,14 +611,13 @@ static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
   }
 }
 
-static int read_bits(MB_SLAVE_VAL_T *grp) {
-  MB_SLAVE_T *slave = grp->slave;
+static int read_block_bits(MB_BLOCK_T *blk) {
+  MB_SLAVE_T *slave = blk->slave;
   MB_MASTER_T *master = slave->master;
   MB_SLAVE_VAL_T *val;
-  MB_SLAVE_VAL_T *dpval;
-  uint8_t *buf = slave->input_buf;
+  int val_idx;
+  uint8_t buf[blk->count];
   int ret;
-  uint8_t *p;
 
   // set slave address
   ret = modbus_set_slave(master->ctx, slave->id);
@@ -671,39 +625,33 @@ static int read_bits(MB_SLAVE_VAL_T *grp) {
     return ret;
   }
 
-  if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT) {
-    ret = modbus_read_input_bits(master->ctx, grp->addr, grp->in_group_count, buf);
+  if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT) {
+    ret = modbus_read_input_bits(master->ctx, blk->addr, blk->count, buf);
   } else {
-    ret = modbus_read_bits(master->ctx, grp->addr, grp->in_group_count, buf);
+    ret = modbus_read_bits(master->ctx, blk->addr, blk->count, buf);
   }
 
   if (ret < 0) {
     return ret;
   }
 
-  for (val = grp; val != NULL; val = val->in_group_same) {
-    p = &buf[val->in_group_index];
-    // dispatch value
-    for (dpval = val; dpval != NULL; dpval = dpval->same_reg) {
-      switch (dpval->type) {
-        case UVRGW_CONF_MB_TYPE_BIT:
-          uvrgw_conf_disp_val(dpval->disp, dpval, *p ? 1.0 : 0.0);
-          break;
-      }
+  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+    if (val->type == UVRGW_CONF_MB_TYPE_BIT) {
+      uvrgw_conf_disp_val(val->disp, val, buf[val->offset] ? 1.0 : 0.0);
     }
   }
 
   return 0;
 }
 
-static int read_registers(MB_SLAVE_VAL_T *grp) {
-  MB_SLAVE_T *slave = grp->slave;
+static int read_block_registers(MB_BLOCK_T *blk) {
+  MB_SLAVE_T *slave = blk->slave;
   MB_MASTER_T *master = slave->master;
   MB_SLAVE_VAL_T *val;
-  MB_SLAVE_VAL_T *dpval;
-  uint16_t *buf = slave->input_buf;
+  int val_idx;
+  uint16_t buf[blk->count];
   int ret;
-  uint16_t *p;
+  double sf;
 
   // set slave address
   ret = modbus_set_slave(master->ctx, slave->id);
@@ -711,34 +659,23 @@ static int read_registers(MB_SLAVE_VAL_T *grp) {
     return ret;
   }
 
-  if (grp->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
-    ret = modbus_read_input_registers(master->ctx, grp->addr, grp->in_group_count, buf);
+  if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INREG) {
+    ret = modbus_read_input_registers(master->ctx, blk->addr, blk->count, buf);
   } else {
-    ret = modbus_read_registers(master->ctx, grp->addr, grp->in_group_count, buf);
+    ret = modbus_read_registers(master->ctx, blk->addr, blk->count, buf);
   }
 
   if (ret < 0) {
     return ret;
   }
 
-  for (val = grp; val != NULL; val = val->in_group_same) {
-    p = &buf[val->in_group_index];
-    // dispatch value
-    for (dpval = val; dpval != NULL; dpval = dpval->same_reg) {
-      if (dpval->sf_name == NULL) {
-        // no scale_factor is given -> direct dispatch
-        dispatch_value(dpval, *p, 1.0);
-      } else {
-        // scale_factor is given -> remember raw value and set pending flag
-        dpval->sf_raw = *p;
-        dpval->sf_pending = true;
-      }
-
-      // dispatch scale_factor dependent values
-      if (dpval->sf_dest != NULL) {
-        dispatch_sf(dpval, *p);
-      }
+  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+    if (val->sf_source != NULL) {
+      sf = pow(10.0, (double) ((int16_t) buf[val->sf_source->offset]));
+    } else {
+      sf = 1.0;
     }
+    dispatch_value(val, buf[val->offset], sf);
   }
 
   return 0;
@@ -747,10 +684,10 @@ static int read_registers(MB_SLAVE_VAL_T *grp) {
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
   switch (dpval->type) {
     case UVRGW_CONF_MB_TYPE_SIGNED:
-      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) v)) * sf * dpval->scale + dpval->offset);
+      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) v)) * sf * dpval->scale + dpval->val_offset);
       break;
     case UVRGW_CONF_MB_TYPE_UNSIGNED:
-      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) v) * sf * dpval->scale + dpval->offset);
+      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) v) * sf * dpval->scale + dpval->val_offset);
       break;
     case UVRGW_CONF_MB_TYPE_BITMASK:
       uvrgw_conf_disp_val(dpval->disp, dpval, (v & (1 << dpval->pos)) ? 1.0 : 0.0);
@@ -758,34 +695,9 @@ static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
   }
 }
 
-static void dispatch_sf(MB_SLAVE_VAL_T *dpval, uint16_t v) {
-  MB_SLAVE_VAL_T *val;
-  double sf;
-
-  // To ensure consistency of values we check if scale factor has been changed
-  // since last poll. This will delay delivery of values by one cycle and drop
-  // value updates on changes of scale factor, as we don't know if the values
-  // are read before or after the update
-  if (dpval->sf_raw != v) {
-    dpval->sf_raw = v;
-    return;
-  }
-
-  // calculate scale factor
-  sf = pow(10.0, (double) ((int16_t) v));
-
-  // dispatch depended values, if peding
-  for (val = dpval->sf_dest; val != NULL; val = val->sf_next) {
-    if (val->sf_pending) {
-      dispatch_value(val, val->sf_raw, sf);
-      val->sf_pending = false;
-    }
-  }
-}
-
 static int write_schedule(void *v, double f) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) v;
-  MB_SLAVE_T *slave = val->slave;
+  MB_SLAVE_T *slave = val->block->slave;
   MB_MASTER_T *master = slave->master;
 
   pthread_mutex_lock(&master->write_lock);
@@ -797,8 +709,9 @@ static int write_schedule(void *v, double f) {
 }
 
 static int write_execute(MB_SLAVE_VAL_T *val) {
-  MB_SLAVE_T *slave = val->slave;
+  MB_SLAVE_T *slave = val->block->slave;
   MB_MASTER_T *master = slave->master;
+  int addr = val->block->addr + val->offset;
   bool pending;
   double f;
   uint16_t *buf;
@@ -821,31 +734,31 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   }
 
   if (val->type == UVRGW_CONF_MB_TYPE_BIT) {
-    if (modbus_write_bit(master->ctx, val->addr, (f > 0.5)) < 0) {
+    if (modbus_write_bit(master->ctx, addr, (f > 0.5)) < 0) {
       return -1;
     }
   } else {
     switch (val->type) {
       case UVRGW_CONF_MB_TYPE_SIGNED:
-        f = (f - val->offset) / val->scale;
-        if (modbus_write_register(master->ctx, val->addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX)) < 0) {
+        f = (f - val->val_offset) / val->scale;
+        if (modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX)) < 0) {
           return -1;
         }
         break;
       case UVRGW_CONF_MB_TYPE_UNSIGNED:
-        f = (f - val->offset) / val->scale;
-        if (modbus_write_register(master->ctx, val->addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX)) < 0) {
+        f = (f - val->val_offset) / val->scale;
+        if (modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX)) < 0) {
           return -1;
         }
         break;
       case UVRGW_CONF_MB_TYPE_BITMASK:
-        buf = &val->same_base->valbuf;
+        buf = &val->bitmask_base->valbuf;
         if (f > 0.5) {
           *buf |= (1 << val->pos);
         } else {
           *buf &= ~(1 << val->pos);
         }
-        if (modbus_write_register(master->ctx, val->addr, *buf) < 0) {
+        if (modbus_write_register(master->ctx, addr, *buf) < 0) {
           return -1;
         }
         break;

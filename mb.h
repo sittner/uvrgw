@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 struct MB_SLAVE_VAL;
+struct MB_BLOCK;
 struct MB_SLAVE;
 struct MB_MASTER;
 struct MB_RTU_MASTER;
@@ -16,25 +17,13 @@ struct MB_TCP_MASTER;
 
 typedef struct MB_SLAVE_VAL {
   const char *name;
-  int dir;
-  int regtype;
-  int addr;
+  int offset;
   int type;
   int pos;
   double scale;
-  double offset;
+  double val_offset;
 
-  struct MB_SLAVE *slave;
-
-  struct MB_SLAVE_VAL *prev;
-  struct MB_SLAVE_VAL *next;
-  struct MB_SLAVE_VAL *same_reg;
-  struct MB_SLAVE_VAL *same_base;
-
-  struct MB_SLAVE_VAL *in_group_same;
-  struct MB_SLAVE_VAL *in_group_next;
-  int in_group_count;
-  int in_group_index;
+  struct MB_BLOCK *block;
 
   struct MB_SLAVE_VAL *value_out_next;
 
@@ -45,34 +34,38 @@ typedef struct MB_SLAVE_VAL {
   double write_value;
 
   const char *sf_name;
-  uint16_t sf_raw;
-  bool sf_pending;
-  struct MB_SLAVE_VAL *sf_dest;
-  struct MB_SLAVE_VAL *sf_next;
+  struct MB_SLAVE_VAL *sf_source;
+  struct MB_SLAVE_VAL *bitmask_base;
 
 } MB_SLAVE_VAL_T;
 
-typedef struct MB_SLAVE {
-  int id;
-  int interval;
-  int max_req_regs;
-
-  struct MB_MASTER *master;
+typedef struct MB_BLOCK {
+  int dir;
+  int regtype;
+  int addr;
+  int count;
 
   int values_count;
   struct MB_SLAVE_VAL *values;
 
-  struct MB_SLAVE_VAL *values_head;
-  struct MB_SLAVE_VAL *values_tail;
+  struct MB_SLAVE *slave;
+} MB_BLOCK_T;
 
-  struct MB_SLAVE_VAL *in_group_head;
-  struct MB_SLAVE_VAL *in_group_curr;
+typedef struct MB_SLAVE {
+  int id;
+  int interval;
+
+  struct MB_MASTER *master;
+
+  int blocks_count;
+  struct MB_BLOCK *blocks;
+
+  int block_read_idx;
 
   struct MB_SLAVE_VAL *value_out_head;
   struct MB_SLAVE_VAL *value_out_curr;
 
   int64_t next_poll;
-  void *input_buf;
 } MB_SLAVE_T;
 
 typedef struct MB_MASTER {
