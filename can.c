@@ -195,6 +195,44 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
 
+  if (val->pos < 0) {
+    syslog(LOG_ERR, "CAN value '%s' has invalid pos %d.", val->name, val->pos);
+    return -1;
+  }
+
+  switch (val->type) {
+    case UVRGW_CONF_CAN_TYPE_BIT:
+      if ((val->pos >> 3) >= 8) {
+        syslog(LOG_ERR, "CAN value '%s' bit pos %d exceeds frame data boundary.", val->name, val->pos);
+        return -1;
+      }
+      break;
+    case UVRGW_CONF_CAN_TYPE_U8:
+    case UVRGW_CONF_CAN_TYPE_S8:
+      if (val->pos + 1 > 8) {
+        syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 1-byte type.", val->name, val->pos);
+        return -1;
+      }
+      break;
+    case UVRGW_CONF_CAN_TYPE_U16:
+    case UVRGW_CONF_CAN_TYPE_S16:
+      if (val->pos + 2 > 8) {
+        syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 2-byte type.", val->name, val->pos);
+        return -1;
+      }
+      break;
+    case UVRGW_CONF_CAN_TYPE_U32:
+    case UVRGW_CONF_CAN_TYPE_S32:
+      if (val->pos + 4 > 8) {
+        syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 4-byte type.", val->name, val->pos);
+        return -1;
+      }
+      break;
+    default:
+      syslog(LOG_ERR, "CAN value '%s' has invalid type.", val->name);
+      return -1;
+  }
+
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT));
 
   return 0;
@@ -210,7 +248,8 @@ static int iface_startup(CAN_IFACE_T *iface) {
   // get interface index
   struct ifreq ifr;
   memset(&ifr, 0, sizeof(ifr));
-  strncpy(ifr.ifr_name, iface->interface, IFNAMSIZ);
+  strncpy(ifr.ifr_name, iface->interface, IFNAMSIZ - 1);
+  ifr.ifr_name[IFNAMSIZ - 1] = '\0';
   if (ioctl(iface->can_fd, SIOCGIFINDEX, &ifr) < 0) {
     syslog(LOG_ERR, "Could not set CAN interface name '%s'", iface->interface);
     goto fail1;

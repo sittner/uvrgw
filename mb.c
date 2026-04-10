@@ -588,13 +588,15 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
   // read registers or bits
   if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
     if (read_block_bits(blk) < 0) {
-      syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, errno);
+      int saved_errno = errno;
+      syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, saved_errno);
       slave->next_poll = now + slave->interval;
       return -1;
     }
   } else {
     if (read_block_registers(blk) < 0) {
-      syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, errno);
+      int saved_errno = errno;
+      syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, saved_errno);
       slave->next_poll = now + slave->interval;
       return -1;
     }
