@@ -92,23 +92,29 @@ static cfg_opt_t can_opts[] = {
   CFG_END()
 };
 
-static cfg_opt_t mb_slave_val_opts[] = {
-  CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
-  CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
-  CFG_INT("addr", -1, CFGF_NONE),
+static cfg_opt_t mb_block_val_opts[] = {
+  CFG_INT("offset", -1, CFGF_NONE),
   CFG_INT_CB("type", -1, CFGF_NONE, parse_mb_val_type),
   CFG_INT("pos", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
-  CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_FLOAT("offset_val", 0.0, CFGF_NONE),
   CFG_STR("scale_factor", NULL, CFGF_NONE),
+  CFG_END()
+};
+
+static cfg_opt_t mb_block_opts[] = {
+  CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
+  CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
+  CFG_INT("addr", -1, CFGF_NONE),
+  CFG_INT("count", -1, CFGF_NONE),
+  CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
 
 static cfg_opt_t mb_slave_opts[] = {
   CFG_INT("id", -1, CFGF_NONE),
   CFG_INT("interval", 0, CFGF_NONE),
-  CFG_INT("max_req_regs", 32, CFGF_NONE),
-  CFG_SEC("value", mb_slave_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("block", mb_block_opts, CFGF_MULTI),
   CFG_END()
 };
 
