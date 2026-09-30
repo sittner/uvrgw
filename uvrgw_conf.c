@@ -17,6 +17,7 @@
 #include "mb.h"
 #include "mqtt.h"
 #include "rest.h"
+#include "sunspec.h"
 #include "utils.h"
 
 #include <math.h>
@@ -158,12 +159,53 @@ static cfg_opt_t mb_tcp_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t sunspec_meter_opts[] = {
+  CFG_INT("unit_id", -1, CFGF_NONE),
+  CFG_STR("manufacturer", NULL, CFGF_NONE),
+  CFG_STR("model", NULL, CFGF_NONE),
+  CFG_STR("options", NULL, CFGF_NONE),
+  CFG_STR("version", NULL, CFGF_NONE),
+  CFG_STR("serial", NULL, CFGF_NONE),
+  CFG_STR("current_l1", NULL, CFGF_NONE),
+  CFG_STR("current_l2", NULL, CFGF_NONE),
+  CFG_STR("current_l3", NULL, CFGF_NONE),
+  CFG_STR("voltage_l1", NULL, CFGF_NONE),
+  CFG_STR("voltage_l2", NULL, CFGF_NONE),
+  CFG_STR("voltage_l3", NULL, CFGF_NONE),
+  CFG_STR("power_l1", NULL, CFGF_NONE),
+  CFG_STR("power_l2", NULL, CFGF_NONE),
+  CFG_STR("power_l3", NULL, CFGF_NONE),
+  CFG_STR("pf_l1", NULL, CFGF_NONE),
+  CFG_STR("pf_l2", NULL, CFGF_NONE),
+  CFG_STR("pf_l3", NULL, CFGF_NONE),
+  CFG_STR("energy_import_l1", NULL, CFGF_NONE),
+  CFG_STR("energy_import_l2", NULL, CFGF_NONE),
+  CFG_STR("energy_import_l3", NULL, CFGF_NONE),
+  CFG_STR("energy_export_l1", NULL, CFGF_NONE),
+  CFG_STR("energy_export_l2", NULL, CFGF_NONE),
+  CFG_STR("energy_export_l3", NULL, CFGF_NONE),
+  CFG_STR("power", NULL, CFGF_NONE),
+  CFG_STR("energy_import", NULL, CFGF_NONE),
+  CFG_STR("energy_export", NULL, CFGF_NONE),
+  CFG_STR("frequency", NULL, CFGF_NONE),
+  CFG_END()
+};
+
+static cfg_opt_t sunspec_server_opts[] = {
+  CFG_STR("bind", "0.0.0.0", CFGF_NONE),
+  CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
+  CFG_INT("stale_timeout", 30000, CFGF_NONE),
+  CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_END()
+};
+
 static cfg_opt_t opts[] = {
   CFG_SEC("mqtt", mqtt_opts, CFGF_MULTI),
   CFG_SEC("json", json_opts, CFGF_MULTI),
   CFG_SEC("can", can_opts, CFGF_MULTI),
   CFG_SEC("modbus_rtu", mb_rtu_opts, CFGF_MULTI),
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
+  CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
   CFG_END()
 };
 
@@ -359,6 +401,7 @@ int uvrgw_conf_load(const char *file) {
   mb_init();
   mqtt_init();
   rest_init();
+  sunspec_init();
 
   if (can_configure(cfg)) {
     goto fail2;
@@ -373,6 +416,10 @@ int uvrgw_conf_load(const char *file) {
   }
 
   if (rest_configure(cfg)) {
+    goto fail2;
+  }
+
+  if (sunspec_configure(cfg)) {
     goto fail2;
   }
 
@@ -399,6 +446,7 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  sunspec_unconfigure();
   rest_unconfigure();
   mqtt_unconfigure();
   can_unconfigure();

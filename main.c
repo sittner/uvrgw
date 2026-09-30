@@ -22,6 +22,7 @@
 #include "mb.h"
 #include "mqtt.h"
 #include "rest.h"
+#include "sunspec.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -129,6 +130,10 @@ int main(int argc, char **argv)
     goto fail_rest;
   }
 
+  if (sunspec_startup() < 0) {
+    goto fail_sunspec;
+  }
+
   while(true) {
     max_fd = 0;
     FD_ZERO(&read_fd_set);
@@ -160,6 +165,8 @@ int main(int argc, char **argv)
   ret = 0;
 
 fail_loop:
+  sunspec_shutdown();
+fail_sunspec:
   rest_shutdown();
 fail_rest:
   mqtt_shutdown();

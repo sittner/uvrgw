@@ -11,6 +11,7 @@ SRC = \
 	mqtt.c \
 	rest.c \
 	ntp_check.c \
+	sunspec.c \
 
 OBJ = $(SRC:.c=.o)
 

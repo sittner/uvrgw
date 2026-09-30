@@ -10,6 +10,7 @@
 - **Modbus RTU and TCP** — poll Modbus slaves on configurable intervals; read holding registers, input registers, coils and discrete inputs; write holding registers and coils.  Supports 16/32-bit integer (`s16`, `u16`, `s32`, `u32`), 32-bit float (`f32`), bit and bitmask value types with an optional per-value scale-factor register.
 - **MQTT** (via libmosquitto) — publish and subscribe with configurable topics, QoS, retain flag and a last-will state topic.  Value types: `number` (printf-style format string), `switch` (`ON`/`OFF`), `contact` (`OPEN`/`CLOSED`).
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
+- **SunSpec smart meter emulation** — Modbus TCP server serving virtual three-phase meters (SunSpec models 1 + 213, float), e.g. as secondary meters for a Fronius inverter.  Meter quantities are taken from any input by value name; apparent/reactive power, phase-to-phase voltages and totals are derived.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **NTP synchronisation guard** — CAN timestamp frames are only sent when the local NTP daemon reports a synchronised clock.
 - Single configuration file, libconfuse-based syntax.
@@ -283,6 +284,48 @@ modbus_tcp {
 - Modbus TCP connections are opened on demand.  If the server is unreachable, the connection is retried every second; after a timeout or I/O error the connection is closed and re-established before the next request.
 - Bitmask outputs are written from a local register image that starts at 0 and is not read back from the device.  Writing one bit therefore also writes all other bits of that register — map every relevant bit of such a register as an output.
 
+### SunSpec meter emulation
+
+```
+sunspec_server {
+  bind          = "0.0.0.0"
+  port          = 502      # needs CAP_NET_BIND_SERVICE (or root) for ports < 1024
+  stale_timeout = 30000    # ms; must be larger than the poll interval of the sources
+
+  meter heatpump {
+    unit_id      = 84
+    manufacturer = "modusoft"      # max. 32 chars
+    model        = "SmartMeterGW"  # max. 32 chars
+    serial       = "00000001"      # max. 32 chars
+    # options, version: max. 16 chars (optional)
+
+    # per phase sources (value names), all optional
+    current_l1       = "hp_i1"     # A
+    voltage_l1       = "hp_u1"     # V (phase to neutral)
+    power_l1         = "hp_p1"     # W
+    pf_l1            = "hp_pf1"    # power factor -1..1 (not percent)
+    energy_import_l1 = "hp_imp1"   # Wh
+    energy_export_l1 = "hp_exp1"   # Wh
+    # ... same for _l2 and _l3
+
+    # totals (optional, default: sum of the phases)
+    power         = "hp_p"         # W
+    energy_import = "hp_imp"       # Wh
+    energy_export = "hp_exp"       # Wh
+    frequency     = "grid_freq"    # Hz (optional)
+  }
+}
+```
+
+**SunSpec notes:**
+
+- Each meter answers on its own `unit_id`; requests for other unit IDs are not answered.  Only function code 3 (read holding registers) is supported, registers 40000–40196: `SunS` marker, common model 1, float meter model 213, end model.
+- Derived per phase: apparent power `S = V × I`, reactive power `Q = sqrt(|S² − P²|)`, power factor `P / S` if no `pf` source is given, phase-to-phase voltages from the phase-to-neutral voltages (120° phase shift).
+- Totals: sum of currents, powers and energies (unless given explicitly), average voltages, total power factor `P / S`.
+- Quantities that are neither configured nor derivable (e.g. frequency, VAh, VArh) are served as 0.
+- If a configured source value has not been updated within `stale_timeout`, requests for that meter are answered with exception 4 (server device failure), so the client keeps its last data instead of seeing wrong values (e.g. energy counters dropping to 0).  State changes are logged.
+- Energy counters are served as float32 (SunSpec model 213), exact to 1 Wh up to 16.7 MWh.
+
 ---
 
 ## Architecture overview
@@ -301,6 +344,7 @@ modbus_tcp {
          │  per-CAN-interface TX thread                 │
          │  per-Modbus-master polling thread            │
          │  per-REST-endpoint polling thread            │
+         │  per-SunSpec-server thread                   │
          │  per-MQTT-connection background thread       │
          │         (managed by libmosquitto)            │
          │                                              │
@@ -318,6 +362,7 @@ modbus_tcp {
 - **CAN TX thread** (`can.c`): wakes every 20 ms, checks for pending outbound frames and the timestamp timer.
 - **Modbus thread** (`mb.c`): wakes every 10 ms, polls slaves round-robin and writes queued output values.
 - **REST thread** (`rest.c`): wakes every 100 ms, checks each endpoint's poll interval and performs HTTP GET.
+- **SunSpec server thread** (`sunspec.c`): waits on the listening socket and client connections (`select()` with 100 ms timeout) and answers requests from a register image rebuilt from the dispatcher's last values.
 - **MQTT** (`mqtt.c`): libmosquitto manages its own background thread for connection, keep-alive and message delivery.
 
 ---
