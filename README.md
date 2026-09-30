@@ -44,10 +44,24 @@ sudo apt install build-essential libconfuse-dev libmodbus-dev \
 make
 ```
 
-Install to `/usr/bin/uvrgw` (requires root):
+Install to `/usr/bin/uvrgw` and the systemd unit to `/lib/systemd/system/uvrgw.service` (requires root):
 
 ```bash
 sudo make install
+```
+
+---
+
+## Running as service
+
+The systemd unit runs uvrgw as unprivileged user `uvrgw` (group `dialout` for the Modbus RTU serial port) and grants `CAP_NET_BIND_SERVICE`, so the SunSpec meter emulation can listen on port 502.  The configuration file contains credentials, so make it readable for the service user only:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin uvrgw
+sudo chown root:uvrgw /etc/uvrgw.conf
+sudo chmod 640 /etc/uvrgw.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now uvrgw
 ```
 
 ---

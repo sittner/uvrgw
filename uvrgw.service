@@ -1,0 +1,23 @@
+[Unit]
+Description=UVR gateway (CAN / Modbus / MQTT / REST / SunSpec meter emulation)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/uvrgw /etc/uvrgw.conf
+Restart=on-failure
+RestartSec=5
+
+# run unprivileged; dialout for the Modbus RTU serial port
+User=uvrgw
+Group=uvrgw
+SupplementaryGroups=dialout
+
+# allow binding Modbus TCP port 502 (SunSpec meter emulation)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
