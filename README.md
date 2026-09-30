@@ -11,6 +11,7 @@
 - **MQTT** (via libmosquitto) — publish and subscribe with configurable topics, QoS, retain flag and a last-will state topic.  Value types: `number` (printf-style format string), `switch` (`ON`/`OFF`), `contact` (`OPEN`/`CLOSED`).
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
 - **SunSpec smart meter emulation** — Modbus TCP server serving virtual three-phase meters (SunSpec models 1 + 213, float), e.g. as secondary meters for a Fronius inverter.  Meter quantities are taken from any input by value name; apparent/reactive power, phase-to-phase voltages and totals are derived.
+- **Persistent counters** — monotonic energy counters from device counters (with reset detection and plausibility check) or by integrating power; state survives restarts and device counter resets.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **NTP synchronisation guard** — CAN timestamp frames are only sent when the local NTP daemon reports a synchronised clock.
 - Single configuration file, libconfuse-based syntax.
@@ -54,7 +55,7 @@ sudo make install
 
 ## Running as service
 
-The systemd unit runs uvrgw as unprivileged user `uvrgw` (group `dialout` for the Modbus RTU serial port) and grants `CAP_NET_BIND_SERVICE`, so the SunSpec meter emulation can listen on port 502.  The configuration file contains credentials, so make it readable for the service user only:
+The systemd unit runs uvrgw as unprivileged user `uvrgw` (group `dialout` for the Modbus RTU serial port) and grants `CAP_NET_BIND_SERVICE`, so the SunSpec meter emulation can listen on port 502.  systemd creates the state directory `/var/lib/uvrgw` (`StateDirectory=`) for the counter states.  The configuration file contains credentials, so make it readable for the service user only:
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin uvrgw
@@ -298,6 +299,43 @@ modbus_tcp {
 - Modbus TCP connections are opened on demand.  If the server is unreachable, the connection is retried every second; after a timeout or I/O error the connection is closed and re-established before the next request.
 - Bitmask outputs are written from a local register image that starts at 0 and is not read back from the device.  Writing one bit therefore also writes all other bits of that register — map every relevant bit of such a register as an output.
 
+### Persistent counters
+
+```
+state_dir = "/var/lib/uvrgw"   # optional; default $STATE_DIRECTORY (systemd) or /var/lib/uvrgw
+
+# device counter (e.g. Shelly energy counter, reset on reboot)
+counter hp_energy_imp1 {
+  source    = "hp_energy_imp1_raw"   # device counter reading (Wh)
+  max_power = 11000                  # W; plausibility limit (0 = off, default)
+}
+
+# power integration (e.g. heating rod)
+counter heating_rod_energy {
+  source          = "heating_rod_power"  # W
+  integrate_power = true
+  max_gap         = 60000                # ms; max. time to hold a power value (default 60000)
+}
+```
+
+A counter listens to its `source` value and publishes the accumulated value under its own name (e.g. for MQTT, SunSpec meters or logging).
+
+**Device counter:** on the first reading ever, the counter starts at the device value.  Then it is increased by the difference to the last reading.  A reading lower than the last one is taken as device counter reset and the reading itself is added.  With `max_power`, an increase larger than `max_power` × time since the last change is treated as glitch (e.g. a device reporting 0 for a moment): nothing is added and the last reading is resynchronised (the real increase during the glitch is lost).  Negative readings are ignored.  After a uvrgw restart, the increase since the last saved reading is added without plausibility check.
+
+**Power integration:** the power is integrated to Wh.  Each power value is held until the next one arrives, but for at most `max_gap` — longer gaps (source offline) and the time uvrgw was not running are not counted.  Negative power is counted as 0.  The counter is advanced and published every second while the source is fresh, so power values that are only sent on change (e.g. CAN) are handled correctly.  A switching load that only provides an on/off signal can be integrated by scaling the signal to its rated power in the source (e.g. `scale = 3000`).
+
+**State files:** each counter stores `<accumulated> <last reading>` in `<state_dir>/counters/<name>` (written atomically every 5 minutes if changed, and on shutdown).  A missing file starts a new counter.  An unreadable or invalid file disables the counter (logged, value stays stale) instead of silently starting from 0.  To set a counter (e.g. take over a value from another system), stop uvrgw, write the file and start uvrgw again.  Counter names may only contain `A-Z a-z 0-9 _ . -`; the source of a counter must not be another counter.
+
+**Gating sources:** a `json` source can be ignored as a whole while the device data is not valid, e.g. a Shelly with unsynchronised clock (whose counters are not valid then):
+
+```
+json {
+  url      = "http://shelly/status"
+  valid_if = "unixtime"   # poll is ignored if this path is missing, 0, false or ""
+  ...
+}
+```
+
 ### SunSpec meter emulation
 
 ```
@@ -359,6 +397,7 @@ sunspec_server {
          │  per-Modbus-master polling thread            │
          │  per-REST-endpoint polling thread            │
          │  per-SunSpec-server thread                   │
+         │  counter thread                              │
          │  per-MQTT-connection background thread       │
          │         (managed by libmosquitto)            │
          │                                              │
@@ -376,6 +415,7 @@ sunspec_server {
 - **CAN TX thread** (`can.c`): wakes every 20 ms, checks for pending outbound frames and the timestamp timer.
 - **Modbus thread** (`mb.c`): wakes every 10 ms, polls slaves round-robin and writes queued output values.
 - **REST thread** (`rest.c`): wakes every 100 ms, checks each endpoint's poll interval and performs HTTP GET.
+- **Counter thread** (`counter.c`): advances power integration counters every second and saves changed counter states every 5 minutes.  Counters are started before and stopped after all other modules, so states are loaded before the first value arrives and saved after the last one.
 - **SunSpec server thread** (`sunspec.c`): waits on the listening socket and client connections (`select()` with 100 ms timeout) and answers requests from a register image rebuilt from the dispatcher's last values.
 - **MQTT** (`mqtt.c`): libmosquitto manages its own background thread for connection, keep-alive and message delivery.
 

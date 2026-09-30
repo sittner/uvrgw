@@ -237,5 +237,16 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f);
  */
 bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts);
 
+/**
+ * @brief Get the state directory for persistent data.
+ *
+ * Configured by the top-level @c state_dir option; defaults to
+ * @c $STATE_DIRECTORY (set by systemd's StateDirectory=) or
+ * @c /var/lib/uvrgw.
+ *
+ * @return  State directory path (valid until uvrgw_conf_cleanup()).
+ */
+const char *uvrgw_conf_state_dir(void);
+
 #endif
 
