@@ -107,6 +107,9 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, false);
+  if (val->disp == NULL) {
+    return -1;
+  }
 
   return 0;
 }
@@ -237,7 +240,7 @@ static int conn_task(REST_CONN_T *conn) {
         f = json_object_get_boolean(json_val) ? 1.0 : 0.0;
         break;
       case json_type_int:
-        f = (double) json_object_get_int(json_val) * val->scale + val->offset;
+        f = (double) json_object_get_int64(json_val) * val->scale + val->offset;
         break;
       case json_type_double:
         f = json_object_get_double(json_val) * val->scale + val->offset;
@@ -314,6 +317,9 @@ static json_object *rest_get_json(const char *url, const char *user, const char 
 
   // set timeout
   curl_easy_setopt(ch, CURLOPT_TIMEOUT_MS, timeout);
+
+  // treat HTTP error status (>= 400) as failure
+  curl_easy_setopt(ch, CURLOPT_FAILONERROR, 1L);
 
   // set calback function
   curl_easy_setopt(ch, CURLOPT_WRITEFUNCTION, rest_get_json_callback);

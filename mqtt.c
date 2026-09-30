@@ -98,8 +98,8 @@ static void message_callback(struct mosquitto *mosq, void *obj, const struct mos
   char buf[32];
   double f;
 
-  // check vor maximum payload length
-  if (msg->payloadlen >= (sizeof(buf) - 1)) {
+  // check for maximum payload length (incl. terminating NUL)
+  if (msg->payloadlen < 0 || msg->payloadlen >= (int) sizeof(buf)) {
     return;
   }
 
@@ -164,6 +164,49 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
   return uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(MQTT_VAL_T), conn, value_configure);
 }
 
+/**
+ * @brief Check that a printf format contains exactly one double conversion.
+ *
+ * Accepts flags, width, precision and the (no-op) @c l modifier followed by
+ * one of @c f, @c F, @c e, @c E, @c g, @c G, @c a, @c A.  @c %% is allowed.
+ *
+ * @param fmt  Format string.
+ * @return     0 if valid, -1 otherwise.
+ */
+static int check_fmt(const char *fmt) {
+  const char *p;
+  int conv_count = 0;
+
+  for (p = fmt; *p != 0; p++) {
+    if (*p != '%') {
+      continue;
+    }
+
+    p++;
+    if (*p == '%') {
+      continue;
+    }
+
+    p += strspn(p, "-+ #0");
+    p += strspn(p, "0123456789");
+    if (*p == '.') {
+      p++;
+      p += strspn(p, "0123456789");
+    }
+    if (*p == 'l') {
+      p++;
+    }
+
+    if (*p == 0 || strchr("fFeEgGaA", *p) == NULL) {
+      return -1;
+    }
+
+    conv_count++;
+  }
+
+  return (conv_count == 1) ? 0 : -1;
+}
+
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) child;
 
@@ -197,51 +240,15 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->fmt != NULL) {
-    int conv_count = 0;
-    const char *p = val->fmt;
-    while (*p) {
-      if (*p == '%') {
-        p++;
-        if (*p == '%') {
-          p++;
-          continue;
-        }
-        if (*p == '\0') {
-          syslog(LOG_ERR, "mqtt value '%s' fmt contains trailing '%%'.", val->name);
-          return -1;
-        }
-        conv_count++;
-        while (*p == '-' || *p == '+' || *p == ' ' || *p == '0' || *p == '#') p++;
-        while (*p >= '0' && *p <= '9') p++;
-        if (*p == '.') {
-          p++;
-          while (*p >= '0' && *p <= '9') p++;
-        }
-        /* skip optional length modifiers: h, hh, l, ll, L */
-        if (*p == 'h') {
-          p++;
-          if (*p == 'h') p++;
-        } else if (*p == 'l') {
-          p++;
-          if (*p == 'l') p++;
-        } else if (*p == 'L') {
-          p++;
-        }
-        if (*p != 'f' && *p != 'e' && *p != 'E' && *p != 'g' && *p != 'G') {
-          syslog(LOG_ERR, "mqtt value '%s' fmt contains non-float conversion specifier.", val->name);
-          return -1;
-        }
-      }
-      p++;
-    }
-    if (conv_count != 1) {
-      syslog(LOG_ERR, "mqtt value '%s' fmt must contain exactly one conversion specifier.", val->name);
-      return -1;
-    }
+  if (val->fmt != NULL && check_fmt(val->fmt) < 0) {
+    syslog(LOG_ERR, "mqtt value '%s' fmt must contain exactly one double conversion (%%f, %%e, %%g).", val->name);
+    return -1;
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->dir == UVRGW_CONF_VAL_DIR_OUT));
+  if (val->disp == NULL) {
+    return -1;
+  }
 
   return 0;
 }
@@ -429,7 +436,7 @@ static int send_value(void *v, double f) {
 
     case UVRGW_CONF_MQTT_TYPE_NUMBER:
       len = snprintf(buf, sizeof(buf), val->fmt, f);
-      if (len > sizeof(buf)) {
+      if (len < 0 || len >= (int) sizeof(buf)) {
         err = MOSQ_ERR_PAYLOAD_SIZE;
       } else {
         err = mosquitto_publish(conn->mosq, NULL, val->topic, len, buf, val->qos, val->retain);

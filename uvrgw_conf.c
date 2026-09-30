@@ -39,7 +39,7 @@ static int parse_mb_rtu_mode(cfg_t *cfg, cfg_opt_t *opt, const char *value, void
 static int parse_mb_rtu_rts(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 
-void static init_dispatcher();
+static void init_dispatcher(void);
 
 static cfg_opt_t mqtt_val_opts[] = {
   CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
@@ -487,13 +487,18 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
 
   if (dp == NULL) {
     dp = calloc(1, sizeof(UVRGW_CONF_VAL_DISPATCH_T));
+    if (dp == NULL) {
+      syslog(LOG_ERR, "Failed to allocate dispatcher for value '%s'.", name);
+      return NULL;
+    }
     dp->name = uvrgw_conf_strdup(name);
-  }
 
-  if (last == NULL) {
-    disp = dp;
-  } else {
-    last->next = dp;
+    // append new dispatcher to list
+    if (last == NULL) {
+      disp = dp;
+    } else {
+      last->next = dp;
+    }
   }
 
   if (alloc_cb) {
@@ -503,7 +508,7 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
   return dp;
 }
 
-void static init_dispatcher() {
+static void init_dispatcher(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
 
   dp = disp;
