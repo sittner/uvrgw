@@ -206,22 +206,30 @@ modbus_rtu {
       count   = 10
 
       value "outdoor_temp" {
-        offset     = 0       # register index within the block
-        type       = signed  # bit / signed / unsigned / bitmask
-        scale      = 0.1
-        offset_val = 0.0
+        reg    = 0       # register index within the block
+        type   = signed  # signed / unsigned / bitmask (bit in inbit/bit blocks)
+        scale  = 0.1
+        offset = 0.0
       }
 
-      # scale_factor: use another register to supply the decimal exponent
+      # scale_factor: use another register of the same block to supply
+      # the decimal exponent
       value "energy" {
-        offset       = 2
+        reg          = 2
         type         = unsigned
         scale_factor = "energy_exp"
       }
 
       value "energy_exp" {
-        offset = 3
-        type   = signed
+        reg  = 3
+        type = signed
+      }
+
+      # bitmask: single bit (0-15) of a register
+      value "pump_on" {
+        reg  = 4
+        type = bitmask
+        bit  = 0
       }
     }
   }
@@ -248,14 +256,21 @@ modbus_tcp {
       count   = 1
 
       value "heating_setpoint" {
-        offset = 0
-        type   = unsigned
-        scale  = 10.0   # stored as integer × 10
+        reg   = 0
+        type  = unsigned
+        scale = 10.0   # stored as integer × 10
       }
     }
   }
 }
 ```
+
+**Modbus notes:**
+
+- Each `block` is read with a single request (`count` registers/bits starting at `addr`).
+- `bit` values are only allowed in `inbit`/`bit` blocks, all other types only in `inreg`/`reg` blocks.  Output blocks must use `bit` or `reg`.
+- If a block read fails with a Modbus exception, polling continues with the next block; if the slave does not respond at all, the remaining blocks are skipped until the next poll interval.
+- Bitmask outputs are written from a local register image that starts at 0 and is not read back from the device.  Writing one bit therefore also writes all other bits of that register — map every relevant bit of such a register as an output.
 
 ---
 

@@ -106,11 +106,11 @@ static cfg_opt_t can_opts[] = {
 };
 
 static cfg_opt_t mb_block_val_opts[] = {
-  CFG_INT("offset", -1, CFGF_NONE),
+  CFG_INT("reg", -1, CFGF_NONE),
   CFG_INT_CB("type", -1, CFGF_NONE, parse_mb_val_type),
-  CFG_INT("pos", -1, CFGF_NONE),
+  CFG_INT("bit", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
-  CFG_FLOAT("offset_val", 0.0, CFGF_NONE),
+  CFG_FLOAT("offset", 0.0, CFGF_NONE),
   CFG_STR("scale_factor", NULL, CFGF_NONE),
   CFG_END()
 };
