@@ -270,6 +270,7 @@ modbus_tcp {
 - Each `block` is read with a single request (`count` registers/bits starting at `addr`).
 - `bit` values are only allowed in `inbit`/`bit` blocks, all other types only in `inreg`/`reg` blocks.  Output blocks must use `bit` or `reg`.
 - If a block read fails with a Modbus exception, polling continues with the next block; if the slave does not respond at all, the remaining blocks are skipped until the next poll interval.
+- Modbus TCP connections are opened on demand.  If the server is unreachable, the connection is retried every second; after a timeout or I/O error the connection is closed and re-established before the next request.
 - Bitmask outputs are written from a local register image that starts at 0 and is not read back from the device.  Writing one bit therefore also writes all other bits of that register — map every relevant bit of such a register as an output.
 
 ---

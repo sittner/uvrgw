@@ -119,6 +119,10 @@ typedef struct MB_MASTER {
   int64_t next_transaction;  /**< Earliest monotonic time (ms) for the next transaction. */
 
   int slave_curr_idx;        /**< Index of the slave currently being serviced. */
+
+  bool tcp;                  /**< True for TCP masters (connection handled on demand). */
+  bool reconnect;            /**< TCP only: connection must be (re)established before the next transaction. */
+  bool connect_failed;       /**< TCP only: last connect attempt failed (suppresses repeated log messages). */
 } MB_MASTER_T;
 
 /**

@@ -38,6 +38,7 @@
 #include <math.h>
 
 #define MASTER_THREAD_PERIOD_US 10000
+#define MASTER_RECONNECT_DELAY_MS 1000
 
 static int rtu_masters_count;
 static MB_RTU_MASTER_T *rtu_masters;
@@ -66,6 +67,7 @@ static int write_schedule(void *v, double f);
 static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_block_bits(MB_BLOCK_T *blk);
 static int read_block_registers(MB_BLOCK_T *blk);
+static void link_error(MB_MASTER_T *master);
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf);
 
 void mb_init(void) {
@@ -117,6 +119,7 @@ static int master_tcp_configure(cfg_t *cfg, void *ctx, void *child) {
 
   master->ip = uvrgw_conf_strdup(cfg_getstr(cfg, "ip"));
   master->port = cfg_getint(cfg, "port");
+  master->master.tcp = true;
 
   if (master->ip == NULL) {
     syslog(LOG_ERR, "modbus_tcp ip not given.");
@@ -495,11 +498,9 @@ static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master) {
     goto fail1;
   }
 
-  // connect/reconnect on demand
-  if (modbus_set_error_recovery(master->ctx, MODBUS_ERROR_RECOVERY_LINK) < 0) {
-    syslog(LOG_ERR, "Could not set modbus error recovery");
-    goto fail1;
-  }
+  // connect on demand in master thread (libmodbus link recovery is not
+  // used, as it retries endlessly while the server is unreachable)
+  master->reconnect = true;
 
   if (master_startup(master) < 0) {
     goto fail1;
@@ -598,7 +599,26 @@ static void *master_thread(void *ptr) {
  */
 static int master_task(MB_MASTER_T *master, int64_t now) {
   MB_SLAVE_T *slave;
+  MB_TCP_MASTER_T *tcp_master;
   int ret;
+
+  // (re)connect TCP master on demand
+  if (master->reconnect) {
+    tcp_master = (MB_TCP_MASTER_T *) master;
+    if (modbus_connect(master->ctx) < 0) {
+      if (!master->connect_failed) {
+        syslog(LOG_WARNING, "Could not connect to MODBUS TCP server %s:%d: %s", tcp_master->ip, tcp_master->port, modbus_strerror(errno));
+        master->connect_failed = true;
+      }
+      master->next_transaction = utl_get_ticks() + MASTER_RECONNECT_DELAY_MS;
+      return 0;
+    }
+    if (master->connect_failed) {
+      syslog(LOG_INFO, "Connected to MODBUS TCP server %s:%d", tcp_master->ip, tcp_master->port);
+      master->connect_failed = false;
+    }
+    master->reconnect = false;
+  }
 
   // get current slave
   if (master->slave_curr_idx < master->slaves_count) {
@@ -646,6 +666,7 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
 static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
   MB_BLOCK_T *blk;
   int ret;
+  int err;
 
   // check poll timer
   if (slave->next_poll > now) {
@@ -678,11 +699,14 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
   slave->block_read_idx++;
 
   if (ret < 0) {
-    // slave not responding: skip remaining blocks until next poll
-    if (errno < MODBUS_ENOBASE) {
+    err = errno;
+    syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(err));
+
+    // no response from slave (e.g. timeout, connection lost): skip remaining blocks until next poll
+    if (err < MODBUS_ENOBASE) {
       slave->next_poll = now + slave->interval;
+      link_error(slave->master);
     }
-    syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(errno));
     return -1;
   }
 
@@ -875,6 +899,7 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   double f;
   uint16_t *buf;
   int ret;
+  int err;
 
   pthread_mutex_lock(&master->write_lock);
   pending = val->write_pending;
@@ -919,10 +944,29 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   }
 
   if (ret < 0) {
-    syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(errno));
+    err = errno;
+    syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
+    if (err < MODBUS_ENOBASE) {
+      link_error(master);
+    }
     return -1;
   }
 
   return 1;
+}
+
+/**
+ * @brief Handle a transaction without valid response (timeout, I/O error).
+ *
+ * For TCP masters the connection is closed, so it is re-established
+ * before the next transaction (this also discards late responses).
+ *
+ * @param master  Master the failed transaction belongs to.
+ */
+static void link_error(MB_MASTER_T *master) {
+  if (master->tcp) {
+    modbus_close(master->ctx);
+    master->reconnect = true;
+  }
 }
 
