@@ -11,9 +11,10 @@
  * scale factor source for another register.  The final dispatched value
  * is raw × scale × 10^exponent + offset.
  *
- * Bitmask support: multiple values can share the same register offset;
- * they all read from the same @c valbuf which is updated once per block
- * read, and each extracts a different bit position.
+ * Bitmask support: multiple values can share the same register; each
+ * extracts a different bit.  Bitmask outputs of one register share a local
+ * register image (@c valbuf), which starts at 0 and is not read back from
+ * the device, so all relevant bits of a written register must be mapped.
  */
 #include "mb.h"
 #include "mqtt.h"
@@ -37,6 +38,7 @@
 #include <math.h>
 
 #define MASTER_THREAD_PERIOD_US 10000
+#define MASTER_RECONNECT_DELAY_MS 1000
 
 static int rtu_masters_count;
 static MB_RTU_MASTER_T *rtu_masters;
@@ -65,6 +67,7 @@ static int write_schedule(void *v, double f);
 static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_block_bits(MB_BLOCK_T *blk);
 static int read_block_registers(MB_BLOCK_T *blk);
+static void link_error(MB_MASTER_T *master);
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf);
 
 void mb_init(void) {
@@ -116,6 +119,7 @@ static int master_tcp_configure(cfg_t *cfg, void *ctx, void *child) {
 
   master->ip = uvrgw_conf_strdup(cfg_getstr(cfg, "ip"));
   master->port = cfg_getint(cfg, "port");
+  master->master.tcp = true;
 
   if (master->ip == NULL) {
     syslog(LOG_ERR, "modbus_tcp ip not given.");
@@ -141,6 +145,11 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
 
   slave->id = cfg_getint(cfg, "id");
   slave->interval = cfg_getint(cfg, "interval");
+
+  if (slave->id < 0 || slave->id > 255) {
+    syslog(LOG_ERR, "modbus slave id not given or invalid.");
+    return -1;
+  }
 
   return uvrgw_conf_config_childs(cfg, "block", &slave->blocks_count, (void **) &slave->blocks, sizeof(MB_BLOCK_T), slave, block_configure);
 }
@@ -177,6 +186,12 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (blk->dir == UVRGW_CONF_VAL_DIR_OUT &&
+      (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INREG)) {
+    syslog(LOG_ERR, "modbus output block must not use read-only regtype inbit/inreg.");
+    return -1;
+  }
+
   if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
     int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_BITS : MODBUS_MAX_WRITE_BITS;
     if (blk->count > max_count) {
@@ -195,7 +210,26 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  // resolve scale factor references and validate
+  // validate register indexes and resolve bitmask_base
+  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+    if (val->reg < 0 || val->reg >= blk->count) {
+      syslog(LOG_ERR, "modbus value '%s' reg %d out of range [0, %d).", val->name, val->reg, blk->count);
+      return -1;
+    }
+
+    // for bitmask values, find the first value at the same register (shared valbuf)
+    if (val->type == UVRGW_CONF_MB_TYPE_BITMASK) {
+      val->bitmask_base = val;
+      for (search = blk->values, search_idx = 0; search_idx < blk->values_count; search++, search_idx++) {
+        if (search->reg == val->reg && search->type == UVRGW_CONF_MB_TYPE_BITMASK) {
+          val->bitmask_base = search;
+          break;
+        }
+      }
+    }
+  }
+
+  // resolve scale factor references
   for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
     if (val->sf_name == NULL) {
       continue;
@@ -212,47 +246,16 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
       return -1;
     }
 
-    if (blk->dir != UVRGW_CONF_VAL_DIR_IN) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' must be in an input block.", val->sf_name);
-      return -1;
-    }
-
     if (sf->type != UVRGW_CONF_MB_TYPE_SIGNED) {
       syslog(LOG_ERR, "modbus scale_factor value '%s' must be a signed value.", val->sf_name);
-      return -1;
-    }
-
-    if (sf->offset < 0 || sf->offset >= blk->count) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' offset out of range.", val->sf_name);
       return -1;
     }
 
     val->sf_source = sf;
   }
 
-  // validate value offsets and resolve bitmask_base
-  for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
-    if (val->offset < 0 || val->offset >= blk->count) {
-      syslog(LOG_ERR, "modbus value '%s' offset %d out of range [0, %d).", val->name, val->offset, blk->count);
-      return -1;
-    }
-
-    // for bitmask values, find the first value at the same offset (shared valbuf)
-    if (val->type == UVRGW_CONF_MB_TYPE_BITMASK) {
-      val->bitmask_base = val;
-      for (search = blk->values, search_idx = 0; search_idx < blk->values_count; search++, search_idx++) {
-        if (search->offset == val->offset && search->type == UVRGW_CONF_MB_TYPE_BITMASK) {
-          val->bitmask_base = search;
-          break;
-        }
-      }
-    }
-  }
-
   // build output value list
-  if (blk->dir == UVRGW_CONF_VAL_DIR_OUT &&
-      blk->regtype != UVRGW_CONF_MB_REG_TYPE_INBIT &&
-      blk->regtype != UVRGW_CONF_MB_REG_TYPE_INREG) {
+  if (blk->dir == UVRGW_CONF_VAL_DIR_OUT) {
     for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
       val->value_out_next = slave->value_out_head;
       slave->value_out_head = val;
@@ -277,31 +280,58 @@ static MB_SLAVE_VAL_T *find_block_value(MB_BLOCK_T *blk, const char *name) {
 
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) child;
+  bool bit_block;
 
   val->block = (MB_BLOCK_T *) ctx;
 
   val->name = uvrgw_conf_strdup(cfg_title(cfg));
   val->sf_name = uvrgw_conf_strdup(cfg_getstr(cfg, "scale_factor"));
-  val->offset = cfg_getint(cfg, "offset");
+  val->reg = cfg_getint(cfg, "reg");
   val->type = cfg_getint(cfg, "type");
-  val->pos = cfg_getint(cfg, "pos");
+  val->bit = cfg_getint(cfg, "bit");
   val->scale = cfg_getfloat(cfg, "scale");
-  val->val_offset = cfg_getfloat(cfg, "offset_val");
+  val->offset = cfg_getfloat(cfg, "offset");
 
-  // check value type
+  // check value type against block register type
+  if (val->type < 0) {
+    syslog(LOG_ERR, "modbus value '%s' type not given.", val->name);
+    return -1;
+  }
+
+  bit_block = (val->block->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || val->block->regtype == UVRGW_CONF_MB_REG_TYPE_BIT);
+  if (bit_block != (val->type == UVRGW_CONF_MB_TYPE_BIT)) {
+    syslog(LOG_ERR, "modbus value '%s': type bit is required in (and only allowed in) inbit/bit blocks.", val->name);
+    return -1;
+  }
+
+  // check bit position
+  if (val->type == UVRGW_CONF_MB_TYPE_BITMASK) {
+    if (val->bit < 0 || val->bit > 15) {
+      syslog(LOG_ERR, "modbus value '%s' bit %d out of range [0, 15].", val->name, val->bit);
+      return -1;
+    }
+  } else if (val->bit >= 0) {
+    syslog(LOG_ERR, "modbus value '%s': bit is only allowed for bitmask values.", val->name);
+    return -1;
+  }
+
+  // check scale factor
   if (val->sf_name != NULL) {
     if (val->block->dir != UVRGW_CONF_VAL_DIR_IN) {
-      syslog(LOG_ERR, "modbus value scale_factor is only allowed for inputs.");
+      syslog(LOG_ERR, "modbus value '%s': scale_factor is only allowed for inputs.", val->name);
       return -1;
     }
 
     if (val->type != UVRGW_CONF_MB_TYPE_SIGNED && val->type != UVRGW_CONF_MB_TYPE_UNSIGNED) {
-      syslog(LOG_ERR, "modbus value scale_factor is only allowed for signed or unsigned values.");
+      syslog(LOG_ERR, "modbus value '%s': scale_factor is only allowed for signed or unsigned values.", val->name);
       return -1;
     }
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->block->dir == UVRGW_CONF_VAL_DIR_OUT));
+  if (val->disp == NULL) {
+    return -1;
+  }
 
   return 0;
 }
@@ -468,11 +498,9 @@ static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master) {
     goto fail1;
   }
 
-  // connect/reconnect on demand
-  if (modbus_set_error_recovery(master->ctx, MODBUS_ERROR_RECOVERY_LINK) < 0) {
-    syslog(LOG_ERR, "Could not set modbus error recovery");
-    goto fail1;
-  }
+  // connect on demand in master thread (libmodbus link recovery is not
+  // used, as it retries endlessly while the server is unreachable)
+  master->reconnect = true;
 
   if (master_startup(master) < 0) {
     goto fail1;
@@ -546,8 +574,9 @@ static void *master_thread(void *ptr) {
   while (master->thread_running) {
     now = utl_get_ticks();
     if (master->next_transaction <= now) {
-      if (master_task(master, now) > 0) {
-        master->next_transaction = now + master->separation_time;
+      // keep separation time after the end of every transaction, also on failed ones
+      if (master_task(master, now) != 0) {
+        master->next_transaction = utl_get_ticks() + master->separation_time;
       }
     }
     usleep(MASTER_THREAD_PERIOD_US);
@@ -570,7 +599,26 @@ static void *master_thread(void *ptr) {
  */
 static int master_task(MB_MASTER_T *master, int64_t now) {
   MB_SLAVE_T *slave;
+  MB_TCP_MASTER_T *tcp_master;
   int ret;
+
+  // (re)connect TCP master on demand
+  if (master->reconnect) {
+    tcp_master = (MB_TCP_MASTER_T *) master;
+    if (modbus_connect(master->ctx) < 0) {
+      if (!master->connect_failed) {
+        syslog(LOG_WARNING, "Could not connect to MODBUS TCP server %s:%d: %s", tcp_master->ip, tcp_master->port, modbus_strerror(errno));
+        master->connect_failed = true;
+      }
+      master->next_transaction = utl_get_ticks() + MASTER_RECONNECT_DELAY_MS;
+      return 0;
+    }
+    if (master->connect_failed) {
+      syslog(LOG_INFO, "Connected to MODBUS TCP server %s:%d", tcp_master->ip, tcp_master->port);
+      master->connect_failed = false;
+    }
+    master->reconnect = false;
+  }
 
   // get current slave
   if (master->slave_curr_idx < master->slaves_count) {
@@ -605,7 +653,10 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
  * @brief Read one input block from @p slave if the poll timer has expired.
  *
  * Reads the next un-read IN-direction block; if all blocks have been
- * read, resets the poll timer.
+ * read, resets the poll timer.  A failing block does not block the
+ * following ones: on Modbus exceptions or protocol errors reading
+ * continues with the next block; only if the slave does not respond at
+ * all (e.g. timeout) the remaining blocks are skipped until the next poll.
  *
  * @param slave  Slave to service.
  * @param now    Current monotonic timestamp (ms).
@@ -614,6 +665,8 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
  */
 static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
   MB_BLOCK_T *blk;
+  int ret;
+  int err;
 
   // check poll timer
   if (slave->next_poll > now) {
@@ -637,22 +690,25 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
 
   // read registers or bits
   if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
-    if (read_block_bits(blk) < 0) {
-      int saved_errno = errno;
-      syslog(LOG_WARNING, "Failed to read MODBUS bits of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, saved_errno);
-      slave->next_poll = now + slave->interval;
-      return -1;
-    }
+    ret = read_block_bits(blk);
   } else {
-    if (read_block_registers(blk) < 0) {
-      int saved_errno = errno;
-      syslog(LOG_WARNING, "Failed to read MODBUS registers of slave %d (start %d, len %d). Error %d.", slave->id, blk->addr, blk->count, saved_errno);
-      slave->next_poll = now + slave->interval;
-      return -1;
-    }
+    ret = read_block_registers(blk);
   }
 
+  // always advance, so a failing block does not starve the following ones
   slave->block_read_idx++;
+
+  if (ret < 0) {
+    err = errno;
+    syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(err));
+
+    // no response from slave (e.g. timeout, connection lost): skip remaining blocks until next poll
+    if (err < MODBUS_ENOBASE) {
+      slave->next_poll = now + slave->interval;
+      link_error(slave->master);
+    }
+    return -1;
+  }
 
   return 1;
 }
@@ -692,7 +748,7 @@ static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
  * @brief Read all coils or discrete inputs of a block and dispatch values.
  *
  * Calls modbus_read_input_bits() or modbus_read_bits() as appropriate
- * and dispatches each BIT-type value.
+ * and dispatches each value.
  *
  * @param blk  Block to read.
  * @return     0 on success, -1 on Modbus error.
@@ -722,9 +778,7 @@ static int read_block_bits(MB_BLOCK_T *blk) {
   }
 
   for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
-    if (val->type == UVRGW_CONF_MB_TYPE_BIT) {
-      uvrgw_conf_disp_val(val->disp, val, buf[val->offset] ? 1.0 : 0.0);
-    }
+    uvrgw_conf_disp_val(val->disp, val, buf[val->reg] ? 1.0 : 0.0);
   }
 
   return 0;
@@ -767,11 +821,11 @@ static int read_block_registers(MB_BLOCK_T *blk) {
 
   for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
     if (val->sf_source != NULL) {
-      sf = pow(10.0, (double) ((int16_t) buf[val->sf_source->offset]));
+      sf = pow(10.0, (double) ((int16_t) buf[val->sf_source->reg]));
     } else {
       sf = 1.0;
     }
-    dispatch_value(val, buf[val->offset], sf);
+    dispatch_value(val, buf[val->reg], sf);
   }
 
   return 0;
@@ -780,7 +834,7 @@ static int read_block_registers(MB_BLOCK_T *blk) {
 /**
  * @brief Convert a raw register value and dispatch it via the value dispatcher.
  *
- * Applies the scale factor @p sf, the value's own @c scale and @c val_offset
+ * Applies the scale factor @p sf, the value's own @c scale and @c offset
  * for signed/unsigned types.  For bitmask values, extracts the configured
  * bit position from @p v.
  *
@@ -791,13 +845,13 @@ static int read_block_registers(MB_BLOCK_T *blk) {
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
   switch (dpval->type) {
     case UVRGW_CONF_MB_TYPE_SIGNED:
-      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) v)) * sf * dpval->scale + dpval->val_offset);
+      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) v)) * sf * dpval->scale + dpval->offset);
       break;
     case UVRGW_CONF_MB_TYPE_UNSIGNED:
-      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) v) * sf * dpval->scale + dpval->val_offset);
+      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) v) * sf * dpval->scale + dpval->offset);
       break;
     case UVRGW_CONF_MB_TYPE_BITMASK:
-      uvrgw_conf_disp_val(dpval->disp, dpval, (v & (1 << dpval->pos)) ? 1.0 : 0.0);
+      uvrgw_conf_disp_val(dpval->disp, dpval, (v & (1 << dpval->bit)) ? 1.0 : 0.0);
       break;
   }
 }
@@ -840,10 +894,12 @@ static int write_schedule(void *v, double f) {
 static int write_execute(MB_SLAVE_VAL_T *val) {
   MB_SLAVE_T *slave = val->block->slave;
   MB_MASTER_T *master = slave->master;
-  int addr = val->block->addr + val->offset;
+  int addr = val->block->addr + val->reg;
   bool pending;
   double f;
   uint16_t *buf;
+  int ret;
+  int err;
 
   pthread_mutex_lock(&master->write_lock);
   pending = val->write_pending;
@@ -862,38 +918,55 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
     return -1;
   }
 
-  if (val->type == UVRGW_CONF_MB_TYPE_BIT) {
-    if (modbus_write_bit(master->ctx, addr, (f > 0.5)) < 0) {
-      return -1;
+  switch (val->type) {
+    case UVRGW_CONF_MB_TYPE_BIT:
+      ret = modbus_write_bit(master->ctx, addr, (f > 0.5));
+      break;
+    case UVRGW_CONF_MB_TYPE_SIGNED:
+      f = (f - val->offset) / val->scale;
+      ret = modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
+      break;
+    case UVRGW_CONF_MB_TYPE_UNSIGNED:
+      f = (f - val->offset) / val->scale;
+      ret = modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
+      break;
+    case UVRGW_CONF_MB_TYPE_BITMASK:
+      buf = &val->bitmask_base->valbuf;
+      if (f > 0.5) {
+        *buf |= (1 << val->bit);
+      } else {
+        *buf &= ~(1 << val->bit);
+      }
+      ret = modbus_write_register(master->ctx, addr, *buf);
+      break;
+    default:
+      return 0;
+  }
+
+  if (ret < 0) {
+    err = errno;
+    syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
+    if (err < MODBUS_ENOBASE) {
+      link_error(master);
     }
-  } else {
-    switch (val->type) {
-      case UVRGW_CONF_MB_TYPE_SIGNED:
-        f = (f - val->val_offset) / val->scale;
-        if (modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX)) < 0) {
-          return -1;
-        }
-        break;
-      case UVRGW_CONF_MB_TYPE_UNSIGNED:
-        f = (f - val->val_offset) / val->scale;
-        if (modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX)) < 0) {
-          return -1;
-        }
-        break;
-      case UVRGW_CONF_MB_TYPE_BITMASK:
-        buf = &val->bitmask_base->valbuf;
-        if (f > 0.5) {
-          *buf |= (1 << val->pos);
-        } else {
-          *buf &= ~(1 << val->pos);
-        }
-        if (modbus_write_register(master->ctx, addr, *buf) < 0) {
-          return -1;
-        }
-        break;
-    }
+    return -1;
   }
 
   return 1;
+}
+
+/**
+ * @brief Handle a transaction without valid response (timeout, I/O error).
+ *
+ * For TCP masters the connection is closed, so it is re-established
+ * before the next transaction (this also discards late responses).
+ *
+ * @param master  Master the failed transaction belongs to.
+ */
+static void link_error(MB_MASTER_T *master) {
+  if (master->tcp) {
+    modbus_close(master->ctx);
+    master->reconnect = true;
+  }
 }
 

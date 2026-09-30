@@ -282,6 +282,9 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT));
+  if (val->disp == NULL) {
+    return -1;
+  }
 
   return 0;
 }
@@ -385,7 +388,7 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
     }
 
     // check for matching CAN-ID
-    if ((rcvd_frame.can_id & CAN_SFF_MASK) != frame->can_id) {
+    if ((rcvd_frame.can_id & CAN_SFF_MASK) != (canid_t) frame->can_id) {
       continue;
     }
 

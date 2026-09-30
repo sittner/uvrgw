@@ -15,6 +15,9 @@
  *  - signed 16-bit register
  *  - unsigned 16-bit register
  *  - bitmask (individual bit extracted from a 16-bit register)
+ *    Note: bitmask outputs are written from a local register image which
+ *    starts at 0 and is not read back from the device, so all bits of a
+ *    written register that matter must be mapped as outputs.
  *  - scale_factor: a companion register provides the decimal exponent
  *    for another value (value × 10^exponent).
  */
@@ -41,25 +44,25 @@ struct MB_TCP_MASTER;
  */
 typedef struct MB_SLAVE_VAL {
   const char *name;          /**< Logical value name (used for dispatch). */
-  int offset;                /**< Register index within the block (0-based). */
+  int reg;                   /**< Register index within the block (0-based). */
   int type;                  /**< Value type; one of the UVRGW_CONF_MB_TYPE_* constants. */
-  int pos;                   /**< Bit position within the register for bitmask values. */
-  double scale;              /**< Scale factor applied after reading: raw × scale + val_offset. */
-  double val_offset;         /**< Offset added after scaling. */
+  int bit;                   /**< Bit position (0-15) within the register for bitmask values. */
+  double scale;              /**< Scale factor applied after reading: raw × scale + offset. */
+  double offset;             /**< Offset added after scaling. */
 
   struct MB_BLOCK *block;    /**< Back-pointer to the containing block. */
 
   struct MB_SLAVE_VAL *value_out_next; /**< Next entry in the slave's output pending list. */
 
   UVRGW_CONF_VAL_DISPATCH_T *disp; /**< Dispatcher for this value name. */
-  uint16_t valbuf;           /**< Raw 16-bit register buffer (used by bitmask values). */
+  uint16_t valbuf;           /**< Local register image for bitmask output writes. */
 
   bool write_pending;        /**< True when a new output value is queued for writing. */
   double write_value;        /**< Queued output value (valid when @c write_pending is true). */
 
   const char *sf_name;       /**< Name of the scale-factor companion register, or NULL. */
   struct MB_SLAVE_VAL *sf_source; /**< Resolved pointer to the scale-factor source value. */
-  struct MB_SLAVE_VAL *bitmask_base; /**< Pointer to the first bitmask value at the same offset (shared valbuf). */
+  struct MB_SLAVE_VAL *bitmask_base; /**< First bitmask value at the same register (owner of the shared valbuf). */
 
 } MB_SLAVE_VAL_T;
 
@@ -102,7 +105,7 @@ typedef struct MB_SLAVE {
  * @brief Common Modbus master state shared by RTU and TCP variants.
  */
 typedef struct MB_MASTER {
-  int separation_time;       /**< Minimum ms between successive Modbus transactions. */
+  int separation_time;       /**< Minimum ms between the end of one Modbus transaction and the start of the next. */
   int timeout;               /**< Transaction timeout in ms. */
 
   int slaves_count;          /**< Number of slave definitions. */
@@ -116,6 +119,10 @@ typedef struct MB_MASTER {
   int64_t next_transaction;  /**< Earliest monotonic time (ms) for the next transaction. */
 
   int slave_curr_idx;        /**< Index of the slave currently being serviced. */
+
+  bool tcp;                  /**< True for TCP masters (connection handled on demand). */
+  bool reconnect;            /**< TCP only: connection must be (re)established before the next transaction. */
+  bool connect_failed;       /**< TCP only: last connect attempt failed (suppresses repeated log messages). */
 } MB_MASTER_T;
 
 /**
