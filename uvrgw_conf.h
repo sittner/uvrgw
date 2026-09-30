@@ -22,7 +22,9 @@
 #define _UVRGW_CONF_H_
 
 #include <confuse.h>
+#include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /** @defgroup val_dir Value direction constants
  *  @{ */
@@ -51,9 +53,12 @@
 /** @defgroup mb_val_types Modbus value type constants
  *  @{ */
 #define UVRGW_CONF_MB_TYPE_BIT      0  /**< Single bit (coil or discrete input). */
-#define UVRGW_CONF_MB_TYPE_SIGNED   1  /**< Signed 16-bit register value. */
-#define UVRGW_CONF_MB_TYPE_UNSIGNED 2  /**< Unsigned 16-bit register value. */
-#define UVRGW_CONF_MB_TYPE_BITMASK  3  /**< Individual bit extracted from a 16-bit register. */
+#define UVRGW_CONF_MB_TYPE_S16     1  /**< Signed 16-bit register value. */
+#define UVRGW_CONF_MB_TYPE_U16     2  /**< Unsigned 16-bit register value. */
+#define UVRGW_CONF_MB_TYPE_BITMASK 3  /**< Individual bit extracted from a 16-bit register. */
+#define UVRGW_CONF_MB_TYPE_S32     4  /**< Signed 32-bit value (2 registers). */
+#define UVRGW_CONF_MB_TYPE_U32     5  /**< Unsigned 32-bit value (2 registers). */
+#define UVRGW_CONF_MB_TYPE_F32     6  /**< IEEE 754 single precision float (2 registers). */
 /** @} */
 
 /** @defgroup mb_reg_types Modbus register type constants
@@ -109,6 +114,10 @@ struct UVRGW_CONF_VAL_DISPATCH;
  * NULL) to count references so the callback array can be pre-allocated.
  * When an input fires uvrgw_conf_disp_val() all non-NULL callbacks whose
  * @c val differs from the source are invoked.
+ *
+ * The dispatcher also keeps the last dispatched value together with its
+ * update time, so consumers can read the current value on demand and
+ * detect stale values (see uvrgw_conf_get_val()).
  */
 typedef struct UVRGW_CONF_VAL_DISPATCH {
   const char *name;                       /**< Logical value name shared across protocol sections. */
@@ -117,6 +126,11 @@ typedef struct UVRGW_CONF_VAL_DISPATCH {
 
   int value_cbs_pos;                      /**< Next free slot in @c value_cbs (used during registration). */
   struct UVRGW_CONF_DISPATCH_CB_VAL *value_cbs; /**< Array of @c value_count callback entries. */
+
+  pthread_mutex_t last_lock;              /**< Protects @c last_value, @c last_update and @c updated. */
+  double last_value;                      /**< Last dispatched value. */
+  int64_t last_update;                    /**< Monotonic time (ms) of the last update. */
+  bool updated;                           /**< True once a value has been dispatched. */
 } UVRGW_CONF_VAL_DISPATCH_T;
 
 /**
@@ -196,15 +210,32 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 /**
  * @brief Dispatch a value to all registered outputs except the source.
  *
- * Iterates over all entries in @p dp->value_cbs and calls every non-NULL
- * callback whose @c val pointer differs from @p val, preventing the source
- * from receiving its own value back.
+ * Stores @p f as the dispatcher's last value, then iterates over all
+ * entries in @p dp->value_cbs and calls every non-NULL callback whose
+ * @c val pointer differs from @p val, preventing the source from receiving
+ * its own value back.
+ *
+ * NaN marks an invalid reading (e.g. a "not implemented" float register):
+ * it is neither stored nor forwarded, so the value becomes stale.
  *
  * @param dp   Dispatcher to fire.
  * @param val  Source value pointer (excluded from delivery).
  * @param f    Value to dispatch as a double.
  */
 void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f);
+
+/**
+ * @brief Get the last dispatched value and its update time.
+ *
+ * Thread-safe; may be called from any thread.
+ *
+ * @param dp  Dispatcher to read.
+ * @param f   Output: last value (unchanged if none was dispatched yet).
+ * @param ts  Output: monotonic time (ms, see utl_get_ticks()) of the last
+ *            update (unchanged if none was dispatched yet); may be NULL.
+ * @return    true if a value has been dispatched, false otherwise.
+ */
+bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts);
 
 #endif
 

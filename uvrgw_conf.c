@@ -17,7 +17,9 @@
 #include "mb.h"
 #include "mqtt.h"
 #include "rest.h"
+#include "utils.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -112,6 +114,7 @@ static cfg_opt_t mb_block_val_opts[] = {
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
   CFG_STR("scale_factor", NULL, CFGF_NONE),
+  CFG_BOOL("word_swap", cfg_false, CFGF_NONE),
   CFG_END()
 };
 
@@ -190,8 +193,11 @@ static const MAP_ITEM_T can_val_type_map[] = {
 
 static const MAP_ITEM_T mb_val_type_map[] = {
   { "bit", UVRGW_CONF_MB_TYPE_BIT },
-  { "signed", UVRGW_CONF_MB_TYPE_SIGNED },
-  { "unsigned", UVRGW_CONF_MB_TYPE_UNSIGNED },
+  { "s16", UVRGW_CONF_MB_TYPE_S16 },
+  { "u16", UVRGW_CONF_MB_TYPE_U16 },
+  { "s32", UVRGW_CONF_MB_TYPE_S32 },
+  { "u32", UVRGW_CONF_MB_TYPE_U32 },
+  { "f32", UVRGW_CONF_MB_TYPE_F32 },
   { "bitmask", UVRGW_CONF_MB_TYPE_BITMASK },
   { NULL }
 };
@@ -401,6 +407,7 @@ void uvrgw_conf_cleanup(void) {
   dp = disp;
   while (dp != NULL) {
     next = dp->next;
+    pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
     free(dp->value_cbs);
     free(dp);
@@ -492,6 +499,7 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
       return NULL;
     }
     dp->name = uvrgw_conf_strdup(name);
+    pthread_mutex_init(&dp->last_lock, NULL);
 
     // append new dispatcher to list
     if (last == NULL) {
@@ -544,7 +552,9 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 }
 
 /**
- * @brief Fire all output callbacks for a dispatcher, excluding the source.
+ * @brief Store the value and fire all output callbacks, excluding the source.
+ *
+ * NaN (invalid reading) is dropped.
  *
  * @param dp   Dispatcher.
  * @param val  Source value pointer (excluded from delivery).
@@ -554,6 +564,18 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
   int i;
   UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;
 
+  // drop invalid readings
+  if (isnan(f)) {
+    return;
+  }
+
+  // remember last value
+  pthread_mutex_lock(&dp->last_lock);
+  dp->last_value = f;
+  dp->last_update = utl_get_ticks();
+  dp->updated = true;
+  pthread_mutex_unlock(&dp->last_lock);
+
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {
       // TODO: handle error
@@ -562,3 +584,26 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
   }
 }
 
+/**
+ * @brief Read the last dispatched value and its update time.
+ *
+ * @param dp  Dispatcher.
+ * @param f   Output: last value.
+ * @param ts  Output: monotonic update time in ms (may be NULL).
+ * @return    true if a value has been dispatched.
+ */
+bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts) {
+  bool updated;
+
+  pthread_mutex_lock(&dp->last_lock);
+  updated = dp->updated;
+  if (updated) {
+    *f = dp->last_value;
+    if (ts != NULL) {
+      *ts = dp->last_update;
+    }
+  }
+  pthread_mutex_unlock(&dp->last_lock);
+
+  return updated;
+}

@@ -7,7 +7,7 @@
 ## Features
 
 - **CAN bus** (Linux SocketCAN) — receive and transmit CAN frames with typed values (`bit`, `u8`, `s8`, `u16`, `s16`, `u32`, `s32`).  Supports periodic NTP-synced timestamp injection on CAN ID `0x100`.  UVR-specific `ANA:node:chan` and `DIG:node` shorthand for CAN IDs.
-- **Modbus RTU and TCP** — poll Modbus slaves on configurable intervals; read holding registers, input registers, coils and discrete inputs; write holding registers and coils.  Supports signed, unsigned, bit and bitmask value types with an optional per-value scale-factor register.
+- **Modbus RTU and TCP** — poll Modbus slaves on configurable intervals; read holding registers, input registers, coils and discrete inputs; write holding registers and coils.  Supports 16/32-bit integer (`s16`, `u16`, `s32`, `u32`), 32-bit float (`f32`), bit and bitmask value types with an optional per-value scale-factor register.
 - **MQTT** (via libmosquitto) — publish and subscribe with configurable topics, QoS, retain flag and a last-will state topic.  Value types: `number` (printf-style format string), `switch` (`ON`/`OFF`), `contact` (`OPEN`/`CLOSED`).
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
@@ -207,7 +207,7 @@ modbus_rtu {
 
       value "outdoor_temp" {
         reg    = 0       # register index within the block
-        type   = signed  # signed / unsigned / bitmask (bit in inbit/bit blocks)
+        type   = s16     # s16 / u16 / s32 / u32 / f32 / bitmask (bit in inbit/bit blocks)
         scale  = 0.1
         offset = 0.0
       }
@@ -215,19 +215,26 @@ modbus_rtu {
       # scale_factor: use another register of the same block to supply
       # the decimal exponent
       value "energy" {
-        reg          = 2
-        type         = unsigned
+        reg          = 2       # 32-bit values occupy 2 registers (2, 3)
+        type         = u32
         scale_factor = "energy_exp"
       }
 
       value "energy_exp" {
-        reg  = 3
-        type = signed
+        reg  = 4
+        type = s16
+      }
+
+      # 32-bit float, low word first
+      value "power" {
+        reg       = 5          # registers 5, 6
+        type      = f32
+        word_swap = true
       }
 
       # bitmask: single bit (0-15) of a register
       value "pump_on" {
-        reg  = 4
+        reg  = 7
         type = bitmask
         bit  = 0
       }
@@ -257,7 +264,7 @@ modbus_tcp {
 
       value "heating_setpoint" {
         reg   = 0
-        type  = unsigned
+        type  = u16
         scale = 10.0   # stored as integer × 10
       }
     }
@@ -268,6 +275,9 @@ modbus_tcp {
 **Modbus notes:**
 
 - Each `block` is read with a single request (`count` registers/bits starting at `addr`).
+- 32-bit types (`s32`, `u32`, `f32`) occupy two registers, high word first (SunSpec order); set `word_swap = true` for devices sending the low word first.  Outputs of these types are written with function code 16 (write multiple registers).
+- `scale_factor` must reference an `s16` value in the same block and is allowed for integer types.
+- A float NaN (SunSpec "not implemented") is treated as invalid reading and not forwarded.
 - `bit` values are only allowed in `inbit`/`bit` blocks, all other types only in `inreg`/`reg` blocks.  Output blocks must use `bit` or `reg`.
 - If a block read fails with a Modbus exception, polling continues with the next block; if the slave does not respond at all, the remaining blocks are skipped until the next poll interval.
 - Modbus TCP connections are opened on demand.  If the server is unreachable, the connection is retried every second; after a timeout or I/O error the connection is closed and re-established before the next request.
@@ -304,7 +314,7 @@ modbus_tcp {
 ```
 
 - **Event loop** (`main.c`): a single `select()` call waits on all CAN sockets and the exit eventfd.  CAN RX is handled in the main thread; everything else runs in dedicated threads.
-- **Value dispatch** (`uvrgw_conf.c`): a linked list of named dispatchers, each holding an array of `(val, callback)` pairs registered during startup.  When a value arrives the dispatcher calls every callback whose `val` pointer differs from the source, preventing loopback.
+- **Value dispatch** (`uvrgw_conf.c`): a linked list of named dispatchers, each holding an array of `(val, callback)` pairs registered during startup.  When a value arrives the dispatcher stores it with its update time (readable via `uvrgw_conf_get_val()`, e.g. to detect stale values) and calls every callback whose `val` pointer differs from the source, preventing loopback.  NaN values are dropped.
 - **CAN TX thread** (`can.c`): wakes every 20 ms, checks for pending outbound frames and the timestamp timer.
 - **Modbus thread** (`mb.c`): wakes every 10 ms, polls slaves round-robin and writes queued output values.
 - **REST thread** (`rest.c`): wakes every 100 ms, checks each endpoint's poll interval and performs HTTP GET.
