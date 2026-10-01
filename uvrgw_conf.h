@@ -61,6 +61,12 @@
 #define UVRGW_CONF_MB_TYPE_F32     6  /**< IEEE 754 single precision float (2 registers). */
 /** @} */
 
+/** @name Counter power sign */
+/** @{ */
+#define UVRGW_CONF_COUNTER_SIGN_POSITIVE  1  /**< Count positive power. */
+#define UVRGW_CONF_COUNTER_SIGN_NEGATIVE -1  /**< Count negative power (as positive energy). */
+/** @} */
+
 /** @defgroup mb_reg_types Modbus register type constants
  *  @{ */
 #define UVRGW_CONF_MB_REG_TYPE_INBIT 0  /**< Discrete input (read-only bit). */

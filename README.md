@@ -318,13 +318,29 @@ counter heating_rod_energy {
   integrate_power = true
   max_gap         = 60000                # ms; max. time to hold a power value (default 60000)
 }
+
+# heat pump: separate heating and cooling counters from one signed kW value
+counter hp_heat_energy {
+  source          = "power_hp"           # kW, > 0 heating, < 0 cooling
+  integrate_power = true
+  scale           = 1000                 # kW -> W
+  sign            = positive             # count positive power (default)
+}
+counter hp_cool_energy {
+  source          = "power_hp"
+  integrate_power = true
+  scale           = 1000
+  sign            = negative             # count negative power as positive energy
+}
 ```
+
+`scale` (default 1.0, must be positive) multiplies the source value first, for both counter types (e.g. 1000 for kW or kWh sources).
 
 A counter listens to its `source` value and publishes the accumulated value under its own name (e.g. for MQTT, SunSpec meters or logging).
 
 **Device counter:** on the first reading ever, the counter starts at the device value.  Then it is increased by the difference to the last reading.  A reading lower than the last one is taken as device counter reset and the reading itself is added.  With `max_power`, an increase larger than `max_power` × time since the last change is treated as glitch (e.g. a device reporting 0 for a moment): nothing is added and the last reading is resynchronised (the real increase during the glitch is lost).  Negative readings are ignored.  After a uvrgw restart, the increase since the last saved reading is added without plausibility check.
 
-**Power integration:** the power is integrated to Wh.  Each power value is held until the next one arrives, but for at most `max_gap` — longer gaps (source offline) and the time uvrgw was not running are not counted.  Negative power is counted as 0.  The counter is advanced and published every second while the source is fresh, so power values that are only sent on change (e.g. CAN) are handled correctly.  A switching load that only provides an on/off signal can be integrated by scaling the signal to its rated power in the source (e.g. `scale = 3000`).
+**Power integration:** the power is integrated to Wh.  Each power value is held until the next one arrives, but for at most `max_gap` — longer gaps (source offline) and the time uvrgw was not running are not counted.  With `sign = positive` (default) only positive power is counted, with `sign = negative` only negative power (as positive energy); the other part is counted as 0.  The counter is advanced and published every second while the source is fresh, so power values that are only sent on change (e.g. CAN) are handled correctly.  A switching load that only provides an on/off signal can be integrated by scaling the signal to its rated power in the source (e.g. `scale = 3000`).
 
 **State files:** each counter stores `<accumulated> <last reading>` in `<state_dir>/counters/<name>` (written atomically every 5 minutes if changed, and on shutdown).  A missing file starts a new counter.  An unreadable or invalid file disables the counter (logged, value stays stale) instead of silently starting from 0.  To set a counter (e.g. take over a value from another system), stop uvrgw, write the file and start uvrgw again.  Counter names may only contain `A-Z a-z 0-9 _ . -`; the source of a counter must not be another counter.
 
