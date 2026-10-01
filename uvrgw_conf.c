@@ -18,6 +18,7 @@
 #include "mqtt.h"
 #include "rest.h"
 #include "sunspec.h"
+#include "counter.h"
 #include "utils.h"
 
 #include <math.h>
@@ -25,6 +26,8 @@
 #include <string.h>
 #include <syslog.h>
 #include <modbus/modbus.h>
+
+#define DEFAULT_STATE_DIR "/var/lib/uvrgw"
 
 typedef struct {
   const char *str;
@@ -81,6 +84,7 @@ static cfg_opt_t json_opts[] = {
   CFG_INT("timeout", 3000, CFGF_NONE),
   CFG_STR("user", NULL, CFGF_NONE),
   CFG_STR("pwd", NULL, CFGF_NONE),
+  CFG_STR("valid_if", NULL, CFGF_NONE),
   CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -199,13 +203,23 @@ static cfg_opt_t sunspec_server_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t counter_opts[] = {
+  CFG_STR("source", NULL, CFGF_NONE),
+  CFG_BOOL("integrate_power", cfg_false, CFGF_NONE),
+  CFG_FLOAT("max_power", 0.0, CFGF_NONE),
+  CFG_INT("max_gap", 60000, CFGF_NONE),
+  CFG_END()
+};
+
 static cfg_opt_t opts[] = {
+  CFG_STR("state_dir", NULL, CFGF_NONE),
   CFG_SEC("mqtt", mqtt_opts, CFGF_MULTI),
   CFG_SEC("json", json_opts, CFGF_MULTI),
   CFG_SEC("can", can_opts, CFGF_MULTI),
   CFG_SEC("modbus_rtu", mb_rtu_opts, CFGF_MULTI),
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
+  CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
 
@@ -273,6 +287,7 @@ static const MAP_ITEM_T mb_rtu_rts_map[] = {
 };
 
 static UVRGW_CONF_VAL_DISPATCH_T *disp;
+static char *state_dir;
 
 static int parse_map(const MAP_ITEM_T *map, cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
   for (; map->str != NULL; map++) {
@@ -397,11 +412,22 @@ int uvrgw_conf_load(const char *file) {
   }
 
   disp = NULL;
+
+  // state directory: config, systemd StateDirectory= or default
+  state_dir = uvrgw_conf_strdup(cfg_getstr(cfg, "state_dir"));
+  if (state_dir == NULL) {
+    state_dir = uvrgw_conf_strdup(getenv("STATE_DIRECTORY"));
+  }
+  if (state_dir == NULL) {
+    state_dir = uvrgw_conf_strdup(DEFAULT_STATE_DIR);
+  }
+
   can_init();
   mb_init();
   mqtt_init();
   rest_init();
   sunspec_init();
+  counter_init();
 
   if (can_configure(cfg)) {
     goto fail2;
@@ -423,10 +449,15 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
+  if (counter_configure(cfg)) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
   mb_register_disp_cbs();
   mqtt_register_disp_cbs();
+  counter_register_disp_cbs();
 
   cfg_free(cfg);
   return 0;
@@ -446,6 +477,7 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  counter_unconfigure();
   sunspec_unconfigure();
   rest_unconfigure();
   mqtt_unconfigure();
@@ -461,6 +493,9 @@ void uvrgw_conf_cleanup(void) {
     free(dp);
     dp = next;
   }
+
+  free(state_dir);
+  state_dir = NULL;
 }
 
 /**
@@ -654,4 +689,13 @@ bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts) {
   pthread_mutex_unlock(&dp->last_lock);
 
   return updated;
+}
+
+/**
+ * @brief Get the state directory for persistent data.
+ *
+ * @return  State directory path.
+ */
+const char *uvrgw_conf_state_dir(void) {
+  return state_dir;
 }

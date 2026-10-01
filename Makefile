@@ -12,6 +12,7 @@ SRC = \
 	rest.c \
 	ntp_check.c \
 	sunspec.c \
+	counter.c \
 
 OBJ = $(SRC:.c=.o)
 
