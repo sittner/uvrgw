@@ -161,7 +161,7 @@ mqtt {
 - Broker outages: with `qos` ≥ 1, snapshots published while the broker is not connected are kept in memory by libmosquitto and delivered after reconnect (no gaps, no duplicates; lost if uvrgw is restarted meanwhile).  With `qos = 0` they are lost.
 - Field names may only contain `A-Z a-z 0-9 _` (not `time`) and must be unique within a logger.
 
-**Writing snapshots to PostgreSQL with Telegraf** (on the broker node; untested sketch, check against your Telegraf version — especially how the `json_v2` parser handles `null` values):
+**Writing snapshots to PostgreSQL with Telegraf** (on the broker node; tested with Telegraf 1.40.1 and PostgreSQL 15):
 
 ```toml
 [agent]
@@ -188,8 +188,11 @@ mqtt {
 
 [[outputs.postgresql]]
   connection = "host=localhost user=telegraf password=secret dbname=ems sslmode=disable"
+  timestamp_column_type = "timestamp with time zone"   # timestamptz (default: without time zone, UTC)
   # one wide table per logger (measurement); columns are added automatically
 ```
+
+Without `timestamp_column_type`, Telegraf creates the `time` column as `timestamp without time zone` holding UTC, which is easily misread as local time.  Existing tables can be converted with `ALTER TABLE <table> ALTER COLUMN time TYPE timestamptz USING time AT TIME ZONE 'UTC';`.
 
 **MQTT input payloads** are validated: `number` accepts only a finite number (surrounding whitespace allowed), `switch` only `ON`/`OFF` and `contact` only `CLOSED`/`OPEN` (case insensitive).  Other payloads (e.g. `unknown`, `unavailable`, `nan`) are ignored and logged once per value, so the value becomes stale instead of wrong.  Each value name may only be used once per `mqtt` section.
 
