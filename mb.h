@@ -12,8 +12,10 @@
  *
  * Value types supported:
  *  - bit (coil / discrete input)
- *  - signed 16-bit register
- *  - unsigned 16-bit register
+ *  - s16 / u16: signed / unsigned 16-bit register
+ *  - s32 / u32 / f32: signed / unsigned 32-bit integer or IEEE 754 float
+ *    in two registers, high word first (as used by SunSpec); @c word_swap
+ *    selects low word first
  *  - bitmask (individual bit extracted from a 16-bit register)
  *    Note: bitmask outputs are written from a local register image which
  *    starts at 0 and is not read back from the device, so all bits of a
@@ -49,6 +51,7 @@ typedef struct MB_SLAVE_VAL {
   int bit;                   /**< Bit position (0-15) within the register for bitmask values. */
   double scale;              /**< Scale factor applied after reading: raw × scale + offset. */
   double offset;             /**< Offset added after scaling. */
+  bool word_swap;            /**< 32-bit types: low word first instead of high word first. */
 
   struct MB_BLOCK *block;    /**< Back-pointer to the containing block. */
 

@@ -11,6 +11,8 @@ SRC = \
 	mqtt.c \
 	rest.c \
 	ntp_check.c \
+	sunspec.c \
+	counter.c \
 
 OBJ = $(SRC:.c=.o)
 
@@ -40,6 +42,7 @@ clean:
 
 install: $(TARGET)
 	install -m755 -D $(TARGET) $(DESTDIR)/usr/bin/$(TARGET)
+	install -m644 -D uvrgw.service $(DESTDIR)/lib/systemd/system/uvrgw.service
 
 realclean: clean
 	make -C test clean

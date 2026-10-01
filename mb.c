@@ -68,7 +68,10 @@ static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_block_bits(MB_BLOCK_T *blk);
 static int read_block_registers(MB_BLOCK_T *blk);
 static void link_error(MB_MASTER_T *master);
-static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf);
+static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double sf);
+static int value_reg_count(int type);
+static uint32_t get_u32(const MB_SLAVE_VAL_T *val, const uint16_t *regs);
+static void set_u32(const MB_SLAVE_VAL_T *val, uint16_t *regs, uint32_t v);
 
 void mb_init(void) {
   rtu_masters_count = 0;
@@ -212,8 +215,8 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
 
   // validate register indexes and resolve bitmask_base
   for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
-    if (val->reg < 0 || val->reg >= blk->count) {
-      syslog(LOG_ERR, "modbus value '%s' reg %d out of range [0, %d).", val->name, val->reg, blk->count);
+    if (val->reg < 0 || val->reg + value_reg_count(val->type) > blk->count) {
+      syslog(LOG_ERR, "modbus value '%s' reg %d (%d register(s)) out of block range [0, %d).", val->name, val->reg, value_reg_count(val->type), blk->count);
       return -1;
     }
 
@@ -246,8 +249,8 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
       return -1;
     }
 
-    if (sf->type != UVRGW_CONF_MB_TYPE_SIGNED) {
-      syslog(LOG_ERR, "modbus scale_factor value '%s' must be a signed value.", val->sf_name);
+    if (sf->type != UVRGW_CONF_MB_TYPE_S16) {
+      syslog(LOG_ERR, "modbus scale_factor value '%s' must be a s16 value.", val->sf_name);
       return -1;
     }
 
@@ -291,6 +294,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->bit = cfg_getint(cfg, "bit");
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
+  val->word_swap = cfg_getbool(cfg, "word_swap");
 
   // check value type against block register type
   if (val->type < 0) {
@@ -315,6 +319,12 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  // check word order option
+  if (val->word_swap && value_reg_count(val->type) != 2) {
+    syslog(LOG_ERR, "modbus value '%s': word_swap is only allowed for 32-bit values.", val->name);
+    return -1;
+  }
+
   // check scale factor
   if (val->sf_name != NULL) {
     if (val->block->dir != UVRGW_CONF_VAL_DIR_IN) {
@@ -322,8 +332,9 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
       return -1;
     }
 
-    if (val->type != UVRGW_CONF_MB_TYPE_SIGNED && val->type != UVRGW_CONF_MB_TYPE_UNSIGNED) {
-      syslog(LOG_ERR, "modbus value '%s': scale_factor is only allowed for signed or unsigned values.", val->name);
+    if (val->type != UVRGW_CONF_MB_TYPE_S16 && val->type != UVRGW_CONF_MB_TYPE_U16 &&
+        val->type != UVRGW_CONF_MB_TYPE_S32 && val->type != UVRGW_CONF_MB_TYPE_U32) {
+      syslog(LOG_ERR, "modbus value '%s': scale_factor is only allowed for integer values.", val->name);
       return -1;
     }
   }
@@ -825,34 +836,104 @@ static int read_block_registers(MB_BLOCK_T *blk) {
     } else {
       sf = 1.0;
     }
-    dispatch_value(val, buf[val->reg], sf);
+    dispatch_value(val, &buf[val->reg], sf);
   }
 
   return 0;
 }
 
 /**
- * @brief Convert a raw register value and dispatch it via the value dispatcher.
+ * @brief Convert raw register value(s) and dispatch via the value dispatcher.
  *
  * Applies the scale factor @p sf, the value's own @c scale and @c offset
- * for signed/unsigned types.  For bitmask values, extracts the configured
- * bit position from @p v.
+ * for numeric types.  For bitmask values, extracts the configured bit.
+ * A float NaN ("not implemented" in SunSpec) is dropped by the dispatcher.
  *
  * @param dpval  Value descriptor.
- * @param v      Raw 16-bit register value.
+ * @param regs   Raw registers of the value (1 or 2, see value_reg_count()).
  * @param sf     Scale-factor multiplier (1.0 if no scale-factor register).
  */
-static void dispatch_value(MB_SLAVE_VAL_T *dpval, uint16_t v, double sf) {
+static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double sf) {
+  double raw;
+  uint32_t u32;
+  float f32;
+
   switch (dpval->type) {
-    case UVRGW_CONF_MB_TYPE_SIGNED:
-      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) ((int16_t) v)) * sf * dpval->scale + dpval->offset);
+    case UVRGW_CONF_MB_TYPE_S16:
+      raw = (double) ((int16_t) regs[0]);
       break;
-    case UVRGW_CONF_MB_TYPE_UNSIGNED:
-      uvrgw_conf_disp_val(dpval->disp, dpval, ((double) v) * sf * dpval->scale + dpval->offset);
+    case UVRGW_CONF_MB_TYPE_U16:
+      raw = (double) regs[0];
+      break;
+    case UVRGW_CONF_MB_TYPE_S32:
+      raw = (double) ((int32_t) get_u32(dpval, regs));
+      break;
+    case UVRGW_CONF_MB_TYPE_U32:
+      raw = (double) get_u32(dpval, regs);
+      break;
+    case UVRGW_CONF_MB_TYPE_F32:
+      u32 = get_u32(dpval, regs);
+      memcpy(&f32, &u32, sizeof(f32));
+      raw = (double) f32;
       break;
     case UVRGW_CONF_MB_TYPE_BITMASK:
-      uvrgw_conf_disp_val(dpval->disp, dpval, (v & (1 << dpval->bit)) ? 1.0 : 0.0);
-      break;
+      uvrgw_conf_disp_val(dpval->disp, dpval, (regs[0] & (1 << dpval->bit)) ? 1.0 : 0.0);
+      return;
+    default:
+      return;
+  }
+
+  uvrgw_conf_disp_val(dpval->disp, dpval, raw * sf * dpval->scale + dpval->offset);
+}
+
+/**
+ * @brief Number of registers occupied by a value type.
+ *
+ * @param type  One of the UVRGW_CONF_MB_TYPE_* constants.
+ * @return      2 for 32-bit types, 1 otherwise.
+ */
+static int value_reg_count(int type) {
+  switch (type) {
+    case UVRGW_CONF_MB_TYPE_S32:
+    case UVRGW_CONF_MB_TYPE_U32:
+    case UVRGW_CONF_MB_TYPE_F32:
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+/**
+ * @brief Combine two registers to a 32-bit value.
+ *
+ * @param val   Value descriptor (for word order).
+ * @param regs  Two raw registers.
+ * @return      32-bit value (high word first unless @c word_swap is set).
+ */
+static uint32_t get_u32(const MB_SLAVE_VAL_T *val, const uint16_t *regs) {
+  if (val->word_swap) {
+    return ((uint32_t) regs[1] << 16) | regs[0];
+  }
+  return ((uint32_t) regs[0] << 16) | regs[1];
+}
+
+/**
+ * @brief Split a 32-bit value into two registers.
+ *
+ * @param val   Value descriptor (for word order).
+ * @param regs  Output: two raw registers.
+ * @param v     32-bit value.
+ */
+static void set_u32(const MB_SLAVE_VAL_T *val, uint16_t *regs, uint32_t v) {
+  uint16_t hi = v >> 16;
+  uint16_t lo = v & 0xffff;
+
+  if (val->word_swap) {
+    regs[0] = lo;
+    regs[1] = hi;
+  } else {
+    regs[0] = hi;
+    regs[1] = lo;
   }
 }
 
@@ -898,6 +979,9 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   bool pending;
   double f;
   uint16_t *buf;
+  uint16_t regs[2];
+  float f32;
+  uint32_t u32;
   int ret;
   int err;
 
@@ -922,13 +1006,29 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
     case UVRGW_CONF_MB_TYPE_BIT:
       ret = modbus_write_bit(master->ctx, addr, (f > 0.5));
       break;
-    case UVRGW_CONF_MB_TYPE_SIGNED:
+    case UVRGW_CONF_MB_TYPE_S16:
       f = (f - val->offset) / val->scale;
       ret = modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
       break;
-    case UVRGW_CONF_MB_TYPE_UNSIGNED:
+    case UVRGW_CONF_MB_TYPE_U16:
       f = (f - val->offset) / val->scale;
       ret = modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
+      break;
+    case UVRGW_CONF_MB_TYPE_S32:
+      f = (f - val->offset) / val->scale;
+      set_u32(val, regs, (uint32_t) ((int32_t) utl_val_limit(f, INT32_MIN, INT32_MAX)));
+      ret = modbus_write_registers(master->ctx, addr, 2, regs);
+      break;
+    case UVRGW_CONF_MB_TYPE_U32:
+      f = (f - val->offset) / val->scale;
+      set_u32(val, regs, (uint32_t) utl_val_limit(f, 0.0, UINT32_MAX));
+      ret = modbus_write_registers(master->ctx, addr, 2, regs);
+      break;
+    case UVRGW_CONF_MB_TYPE_F32:
+      f32 = (float) ((f - val->offset) / val->scale);
+      memcpy(&u32, &f32, sizeof(u32));
+      set_u32(val, regs, u32);
+      ret = modbus_write_registers(master->ctx, addr, 2, regs);
       break;
     case UVRGW_CONF_MB_TYPE_BITMASK:
       buf = &val->bitmask_base->valbuf;

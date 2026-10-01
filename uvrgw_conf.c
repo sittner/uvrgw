@@ -17,11 +17,17 @@
 #include "mb.h"
 #include "mqtt.h"
 #include "rest.h"
+#include "sunspec.h"
+#include "counter.h"
+#include "utils.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 #include <modbus/modbus.h>
+
+#define DEFAULT_STATE_DIR "/var/lib/uvrgw"
 
 typedef struct {
   const char *str;
@@ -78,6 +84,7 @@ static cfg_opt_t json_opts[] = {
   CFG_INT("timeout", 3000, CFGF_NONE),
   CFG_STR("user", NULL, CFGF_NONE),
   CFG_STR("pwd", NULL, CFGF_NONE),
+  CFG_STR("valid_if", NULL, CFGF_NONE),
   CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -112,6 +119,7 @@ static cfg_opt_t mb_block_val_opts[] = {
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
   CFG_STR("scale_factor", NULL, CFGF_NONE),
+  CFG_BOOL("word_swap", cfg_false, CFGF_NONE),
   CFG_END()
 };
 
@@ -155,12 +163,63 @@ static cfg_opt_t mb_tcp_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t sunspec_meter_opts[] = {
+  CFG_INT("unit_id", -1, CFGF_NONE),
+  CFG_STR("manufacturer", NULL, CFGF_NONE),
+  CFG_STR("model", NULL, CFGF_NONE),
+  CFG_STR("options", NULL, CFGF_NONE),
+  CFG_STR("version", NULL, CFGF_NONE),
+  CFG_STR("serial", NULL, CFGF_NONE),
+  CFG_STR("current_l1", NULL, CFGF_NONE),
+  CFG_STR("current_l2", NULL, CFGF_NONE),
+  CFG_STR("current_l3", NULL, CFGF_NONE),
+  CFG_STR("voltage_l1", NULL, CFGF_NONE),
+  CFG_STR("voltage_l2", NULL, CFGF_NONE),
+  CFG_STR("voltage_l3", NULL, CFGF_NONE),
+  CFG_STR("power_l1", NULL, CFGF_NONE),
+  CFG_STR("power_l2", NULL, CFGF_NONE),
+  CFG_STR("power_l3", NULL, CFGF_NONE),
+  CFG_STR("pf_l1", NULL, CFGF_NONE),
+  CFG_STR("pf_l2", NULL, CFGF_NONE),
+  CFG_STR("pf_l3", NULL, CFGF_NONE),
+  CFG_STR("energy_import_l1", NULL, CFGF_NONE),
+  CFG_STR("energy_import_l2", NULL, CFGF_NONE),
+  CFG_STR("energy_import_l3", NULL, CFGF_NONE),
+  CFG_STR("energy_export_l1", NULL, CFGF_NONE),
+  CFG_STR("energy_export_l2", NULL, CFGF_NONE),
+  CFG_STR("energy_export_l3", NULL, CFGF_NONE),
+  CFG_STR("power", NULL, CFGF_NONE),
+  CFG_STR("energy_import", NULL, CFGF_NONE),
+  CFG_STR("energy_export", NULL, CFGF_NONE),
+  CFG_STR("frequency", NULL, CFGF_NONE),
+  CFG_END()
+};
+
+static cfg_opt_t sunspec_server_opts[] = {
+  CFG_STR("bind", "0.0.0.0", CFGF_NONE),
+  CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
+  CFG_INT("stale_timeout", 30000, CFGF_NONE),
+  CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_END()
+};
+
+static cfg_opt_t counter_opts[] = {
+  CFG_STR("source", NULL, CFGF_NONE),
+  CFG_BOOL("integrate_power", cfg_false, CFGF_NONE),
+  CFG_FLOAT("max_power", 0.0, CFGF_NONE),
+  CFG_INT("max_gap", 60000, CFGF_NONE),
+  CFG_END()
+};
+
 static cfg_opt_t opts[] = {
+  CFG_STR("state_dir", NULL, CFGF_NONE),
   CFG_SEC("mqtt", mqtt_opts, CFGF_MULTI),
   CFG_SEC("json", json_opts, CFGF_MULTI),
   CFG_SEC("can", can_opts, CFGF_MULTI),
   CFG_SEC("modbus_rtu", mb_rtu_opts, CFGF_MULTI),
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
+  CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
+  CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
 
@@ -190,8 +249,11 @@ static const MAP_ITEM_T can_val_type_map[] = {
 
 static const MAP_ITEM_T mb_val_type_map[] = {
   { "bit", UVRGW_CONF_MB_TYPE_BIT },
-  { "signed", UVRGW_CONF_MB_TYPE_SIGNED },
-  { "unsigned", UVRGW_CONF_MB_TYPE_UNSIGNED },
+  { "s16", UVRGW_CONF_MB_TYPE_S16 },
+  { "u16", UVRGW_CONF_MB_TYPE_U16 },
+  { "s32", UVRGW_CONF_MB_TYPE_S32 },
+  { "u32", UVRGW_CONF_MB_TYPE_U32 },
+  { "f32", UVRGW_CONF_MB_TYPE_F32 },
   { "bitmask", UVRGW_CONF_MB_TYPE_BITMASK },
   { NULL }
 };
@@ -225,6 +287,7 @@ static const MAP_ITEM_T mb_rtu_rts_map[] = {
 };
 
 static UVRGW_CONF_VAL_DISPATCH_T *disp;
+static char *state_dir;
 
 static int parse_map(const MAP_ITEM_T *map, cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
   for (; map->str != NULL; map++) {
@@ -349,10 +412,22 @@ int uvrgw_conf_load(const char *file) {
   }
 
   disp = NULL;
+
+  // state directory: config, systemd StateDirectory= or default
+  state_dir = uvrgw_conf_strdup(cfg_getstr(cfg, "state_dir"));
+  if (state_dir == NULL) {
+    state_dir = uvrgw_conf_strdup(getenv("STATE_DIRECTORY"));
+  }
+  if (state_dir == NULL) {
+    state_dir = uvrgw_conf_strdup(DEFAULT_STATE_DIR);
+  }
+
   can_init();
   mb_init();
   mqtt_init();
   rest_init();
+  sunspec_init();
+  counter_init();
 
   if (can_configure(cfg)) {
     goto fail2;
@@ -370,10 +445,19 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
+  if (sunspec_configure(cfg)) {
+    goto fail2;
+  }
+
+  if (counter_configure(cfg)) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
   mb_register_disp_cbs();
   mqtt_register_disp_cbs();
+  counter_register_disp_cbs();
 
   cfg_free(cfg);
   return 0;
@@ -393,6 +477,8 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  counter_unconfigure();
+  sunspec_unconfigure();
   rest_unconfigure();
   mqtt_unconfigure();
   can_unconfigure();
@@ -401,11 +487,15 @@ void uvrgw_conf_cleanup(void) {
   dp = disp;
   while (dp != NULL) {
     next = dp->next;
+    pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
     free(dp->value_cbs);
     free(dp);
     dp = next;
   }
+
+  free(state_dir);
+  state_dir = NULL;
 }
 
 /**
@@ -492,6 +582,7 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
       return NULL;
     }
     dp->name = uvrgw_conf_strdup(name);
+    pthread_mutex_init(&dp->last_lock, NULL);
 
     // append new dispatcher to list
     if (last == NULL) {
@@ -544,7 +635,9 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 }
 
 /**
- * @brief Fire all output callbacks for a dispatcher, excluding the source.
+ * @brief Store the value and fire all output callbacks, excluding the source.
+ *
+ * NaN (invalid reading) is dropped.
  *
  * @param dp   Dispatcher.
  * @param val  Source value pointer (excluded from delivery).
@@ -554,6 +647,18 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
   int i;
   UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;
 
+  // drop invalid readings
+  if (isnan(f)) {
+    return;
+  }
+
+  // remember last value
+  pthread_mutex_lock(&dp->last_lock);
+  dp->last_value = f;
+  dp->last_update = utl_get_ticks();
+  dp->updated = true;
+  pthread_mutex_unlock(&dp->last_lock);
+
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {
       // TODO: handle error
@@ -562,3 +667,35 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
   }
 }
 
+/**
+ * @brief Read the last dispatched value and its update time.
+ *
+ * @param dp  Dispatcher.
+ * @param f   Output: last value.
+ * @param ts  Output: monotonic update time in ms (may be NULL).
+ * @return    true if a value has been dispatched.
+ */
+bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts) {
+  bool updated;
+
+  pthread_mutex_lock(&dp->last_lock);
+  updated = dp->updated;
+  if (updated) {
+    *f = dp->last_value;
+    if (ts != NULL) {
+      *ts = dp->last_update;
+    }
+  }
+  pthread_mutex_unlock(&dp->last_lock);
+
+  return updated;
+}
+
+/**
+ * @brief Get the state directory for persistent data.
+ *
+ * @return  State directory path.
+ */
+const char *uvrgw_conf_state_dir(void) {
+  return state_dir;
+}

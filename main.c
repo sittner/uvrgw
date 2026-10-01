@@ -22,6 +22,8 @@
 #include "mb.h"
 #include "mqtt.h"
 #include "rest.h"
+#include "sunspec.h"
+#include "counter.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -113,6 +115,11 @@ int main(int argc, char **argv)
     goto fail_conf;
   }
 
+  // counters first: load states before any source delivers values
+  if (counter_startup() < 0) {
+    goto fail_counter;
+  }
+
   if (can_startup() < 0) {
     goto fail_can;
   }
@@ -127,6 +134,10 @@ int main(int argc, char **argv)
 
   if (rest_startup() < 0) {
     goto fail_rest;
+  }
+
+  if (sunspec_startup() < 0) {
+    goto fail_sunspec;
   }
 
   while(true) {
@@ -160,6 +171,8 @@ int main(int argc, char **argv)
   ret = 0;
 
 fail_loop:
+  sunspec_shutdown();
+fail_sunspec:
   rest_shutdown();
 fail_rest:
   mqtt_shutdown();
@@ -168,6 +181,9 @@ fail_mqtt:
 fail_mb:
   can_shutdown();
 fail_can:
+  // counters last: save final states after all sources are stopped
+  counter_shutdown();
+fail_counter:
   uvrgw_conf_cleanup();
 fail_conf:
   close(exit_fd);

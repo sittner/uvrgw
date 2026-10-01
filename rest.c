@@ -48,6 +48,7 @@ static json_object *rest_get_json(const char *url, const char *user, const char 
 static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb, void *userp);
 static json_object *json_path_lookup(json_object *root, const char *path);
 static json_object *json_path_lookup_recursive(json_object *root, char *path);
+static bool json_is_valid(json_object *json, const char *path);
 
 static int parse_index(const char *s) {
   char *p;
@@ -82,6 +83,7 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
   conn->timeout = cfg_getint(cfg, "timeout");
   conn->user = uvrgw_conf_strdup(cfg_getstr(cfg, "user"));
   conn->pwd = uvrgw_conf_strdup(cfg_getstr(cfg, "pwd"));
+  conn->valid_if = uvrgw_conf_strdup(cfg_getstr(cfg, "valid_if"));
 
   if (conn->url == NULL) {
     syslog(LOG_ERR, "json url name not given.");
@@ -126,6 +128,7 @@ void rest_unconfigure(void) {
       free((void *) val->path);
     }
     free((void *) conn->url);
+    free((void *) conn->valid_if);
     free((void *) conn->user);
     free((void *) conn->pwd);
     free(conn->values);
@@ -227,6 +230,22 @@ static int conn_task(REST_CONN_T *conn) {
   json = rest_get_json(conn->url, conn->user, conn->pwd, conn->timeout);
   if (json == NULL) {
     return 0;
+  }
+
+  // check validity gate (e.g. device time synchronised)
+  if (conn->valid_if != NULL) {
+    if (!json_is_valid(json, conn->valid_if)) {
+      if (!conn->invalid) {
+        syslog(LOG_WARNING, "Data of url '%s' invalid ('%s' missing or zero), values ignored.", conn->url, conn->valid_if);
+        conn->invalid = true;
+      }
+      json_object_put(json);
+      return 0;
+    }
+    if (conn->invalid) {
+      syslog(LOG_INFO, "Data of url '%s' valid again.", conn->url);
+      conn->invalid = false;
+    }
   }
 
   // process values
@@ -421,3 +440,27 @@ static json_object *json_path_lookup_recursive(json_object *root, char *path) {
   return json_path_lookup_recursive(val, sep + 1);
 }
 
+/**
+ * @brief Check the validity gate of a JSON document.
+ *
+ * @param json  Parsed JSON document.
+ * @param path  Dot-separated path of the gate value.
+ * @return      true if the value exists and is a true boolean, a non-zero
+ *              number or a non-empty string.
+ */
+static bool json_is_valid(json_object *json, const char *path) {
+  json_object *val = json_path_lookup(json, path);
+
+  switch (json_object_get_type(val)) {
+    case json_type_boolean:
+      return json_object_get_boolean(val);
+    case json_type_int:
+      return json_object_get_int64(val) != 0;
+    case json_type_double:
+      return json_object_get_double(val) != 0.0;
+    case json_type_string:
+      return json_object_get_string_len(val) > 0;
+    default:
+      return false;
+  }
+}
