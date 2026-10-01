@@ -83,6 +83,8 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
   c->integrate_power = cfg_getbool(cfg, "integrate_power");
   c->max_power = cfg_getfloat(cfg, "max_power");
   c->max_gap = cfg_getint(cfg, "max_gap");
+  c->scale = cfg_getfloat(cfg, "scale");
+  c->sign = cfg_getint(cfg, "sign");
   pthread_mutex_init(&c->lock, NULL);
 
   if (!valid_name(c->name)) {
@@ -100,6 +102,11 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (!(c->scale > 0.0)) {
+    syslog(LOG_ERR, "counter '%s': scale must be positive (use sign for negative power).", c->name);
+    return -1;
+  }
+
   if (c->integrate_power) {
     if (c->max_gap <= 0) {
       syslog(LOG_ERR, "counter '%s': max_gap invalid.", c->name);
@@ -109,9 +116,15 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
       syslog(LOG_ERR, "counter '%s': max_power is not allowed with integrate_power.", c->name);
       return -1;
     }
-  } else if (c->max_power < 0.0) {
-    syslog(LOG_ERR, "counter '%s': max_power invalid.", c->name);
-    return -1;
+  } else {
+    if (c->max_power < 0.0) {
+      syslog(LOG_ERR, "counter '%s': max_power invalid.", c->name);
+      return -1;
+    }
+    if (c->sign != UVRGW_CONF_COUNTER_SIGN_POSITIVE) {
+      syslog(LOG_ERR, "counter '%s': sign is only allowed with integrate_power.", c->name);
+      return -1;
+    }
   }
 
   c->src_disp = uvrgw_conf_get_dispatcher(c->source, true);
@@ -228,13 +241,15 @@ void counter_shutdown(void) {
  * @brief Dispatcher callback: a new source value arrived.
  *
  * @param v  @c COUNTER_T pointer.
- * @param f  Source value (device counter reading or power in W).
+ * @param f  Source value (device counter reading or power, before @c scale).
  * @return   0.
  */
 static int source_update(void *v, double f) {
   COUNTER_T *c = (COUNTER_T *) v;
   int64_t now = utl_get_ticks();
   bool valid = true;
+
+  f *= c->scale;
 
   pthread_mutex_lock(&c->lock);
 
@@ -340,11 +355,14 @@ static void power_update(COUNTER_T *c, double power, int64_t now) {
  * @brief Integrate the held power value up to @p now, but at most up to
  *        @c max_gap after the last power value (called with lock held).
  *
+ * Only power of the configured sign is counted (as positive energy).
+ *
  * @param c    Counter.
  * @param now  Current monotonic time (ms).
  */
 static void integrate(COUNTER_T *c, int64_t now) {
   int64_t end;
+  double power;
 
   if (!c->has_power) {
     return;
@@ -356,8 +374,9 @@ static void integrate(COUNTER_T *c, int64_t now) {
   }
 
   if (end > c->integrated_ts) {
-    if (c->power > 0.0) {
-      c->accum += c->power * (double) (end - c->integrated_ts) / 3600000.0;
+    power = c->power * c->sign;
+    if (power > 0.0) {
+      c->accum += power * (double) (end - c->integrated_ts) / 3600000.0;
       c->dirty = true;
     }
     c->integrated_ts = end;

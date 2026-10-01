@@ -43,6 +43,7 @@ static int parse_mb_reg_type(cfg_t *cfg, cfg_opt_t *opt, const char *value, void
 static int parse_mb_parity(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 static int parse_mb_rtu_mode(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 static int parse_mb_rtu_rts(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
+static int parse_counter_sign(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 
 static void init_dispatcher(void);
@@ -211,6 +212,8 @@ static cfg_opt_t counter_opts[] = {
   CFG_BOOL("integrate_power", cfg_false, CFGF_NONE),
   CFG_FLOAT("max_power", 0.0, CFGF_NONE),
   CFG_INT("max_gap", 60000, CFGF_NONE),
+  CFG_FLOAT("scale", 1.0, CFGF_NONE),
+  CFG_INT_CB("sign", UVRGW_CONF_COUNTER_SIGN_POSITIVE, CFGF_NONE, parse_counter_sign),
   CFG_END()
 };
 
@@ -289,6 +292,12 @@ static const MAP_ITEM_T mb_rtu_rts_map[] = {
   { NULL }
 };
 
+static const MAP_ITEM_T counter_sign_map[] = {
+  { "positive", UVRGW_CONF_COUNTER_SIGN_POSITIVE },
+  { "negative", UVRGW_CONF_COUNTER_SIGN_NEGATIVE },
+  { NULL }
+};
+
 static UVRGW_CONF_VAL_DISPATCH_T *disp;
 static char *state_dir;
 
@@ -334,6 +343,10 @@ static int parse_mb_rtu_mode(cfg_t *cfg, cfg_opt_t *opt, const char *value, void
 
 static int parse_mb_rtu_rts(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
   return parse_map(mb_rtu_rts_map, cfg, opt, value, result);
+}
+
+static int parse_counter_sign(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
+  return parse_map(counter_sign_map, cfg, opt, value, result);
 }
 
 static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {

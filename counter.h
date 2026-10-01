@@ -15,8 +15,12 @@
  *
  *  - Power integration (@c integrate_power): the source is a power in W,
  *    which is integrated to Wh.  The last power value is held until the
- *    next one arrives, but for at most @c max_gap; negative power is
- *    counted as 0.
+ *    next one arrives, but for at most @c max_gap.  @c sign selects the
+ *    counted part: positive power (default), or negative power counted as
+ *    positive energy (e.g. separate heating and cooling counters of a heat
+ *    pump); the other part is counted as 0.
+ *
+ * @c scale multiplies the source value first (e.g. 1000 for kW sources).
  *
  * The state (accumulated value and last reading) of each counter is
  * stored in its own file <state_dir>/counters/<name> as
@@ -45,6 +49,8 @@ typedef struct COUNTER {
   bool integrate_power;      /**< Integrate source power (W) instead of using a device counter. */
   double max_power;          /**< Plausibility limit in W for device counters; 0 = off. */
   int max_gap;               /**< Power integration: max. time (ms) to hold a power value. */
+  double scale;              /**< Multiplier for the source value. */
+  int sign;                  /**< Power integration: counted sign (UVRGW_CONF_COUNTER_SIGN_*). */
 
   UVRGW_CONF_VAL_DISPATCH_T *src_disp; /**< Dispatcher of the source value. */
   UVRGW_CONF_VAL_DISPATCH_T *disp;     /**< Dispatcher of the counter value. */
