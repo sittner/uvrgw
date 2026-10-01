@@ -293,6 +293,8 @@ modbus_tcp {
 - Each `block` is read with a single request (`count` registers/bits starting at `addr`).
 - 32-bit types (`s32`, `u32`, `f32`) occupy two registers, high word first (SunSpec order); set `word_swap = true` for devices sending the low word first.  Outputs of these types are written with function code 16 (write multiple registers).
 - `scale_factor` must reference an `s16` value in the same block and is allowed for integer types.
+- `sunspec_na = true` (input register blocks) drops SunSpec "not implemented" values: `s16` 0x8000, `u16`/`bitmask` 0xffff, `s32` 0x80000000, `u32` 0xffffffff, and values whose scale factor register is 0x8000.  Note: SunSpec `acc32` counters use 0 as marker, which is not dropped (use a `counter` with `max_power` for such values).
+- `expect_reg` / `expect_value` (input register blocks) check a register of the block (index like `reg`) for an expected value, e.g. a SunSpec model ID.  On mismatch the whole block is ignored and a message is logged once.  This protects against shifted register maps, e.g. Fronius inverters shift the SunSpec models by 10 registers when switching between float and int+SF mode.
 - A float NaN (SunSpec "not implemented") is treated as invalid reading and not forwarded.
 - `bit` values are only allowed in `inbit`/`bit` blocks, all other types only in `inreg`/`reg` blocks.  Output blocks must use `bit` or `reg`.
 - If a block read fails with a Modbus exception, polling continues with the next block; if the slave does not respond at all, the remaining blocks are skipped until the next poll interval.
