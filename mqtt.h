@@ -27,6 +27,7 @@
 
 struct MQTT_VAL;
 struct MQTT_CONN;
+struct MQTT_LOGGER;
 
 /**
  * @brief A single MQTT publish/subscribe value.
@@ -63,6 +64,9 @@ typedef struct MQTT_CONN {
 
   int values_count;          /**< Number of value definitions. */
   struct MQTT_VAL *values;   /**< Array of value definitions. */
+
+  int loggers_count;         /**< Number of loggers. */
+  struct MQTT_LOGGER *loggers; /**< Array of loggers (see mqtt_logger.h). */
 
   struct mosquitto *mosq;    /**< libmosquitto handle; NULL when not started. */
 

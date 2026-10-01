@@ -9,6 +9,7 @@ SRC = \
 	can.c \
 	mb.c \
 	mqtt.c \
+	mqtt_logger.c \
 	rest.c \
 	ntp_check.c \
 	sunspec.c \
