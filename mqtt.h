@@ -44,6 +44,7 @@ typedef struct MQTT_VAL {
 
   UVRGW_CONF_VAL_DISPATCH_T *disp; /**< Dispatcher for this value name. */
 
+  bool invalid;        /**< Input: last payload was invalid (for state logging). */
 } MQTT_VAL_T;
 
 /**

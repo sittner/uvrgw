@@ -20,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <ctype.h>
+#include <math.h>
 #include <syslog.h>
 #include <fcntl.h>
 
@@ -31,6 +34,7 @@ static MQTT_CONN_T *conns;
 static int conn_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static int send_value(void *v, double f);
+static bool parse_payload(const MQTT_VAL_T *val, const char *buf, double *f);
 
 static int conn_startup(MQTT_CONN_T *conn);
 static void conn_shutdown(MQTT_CONN_T *conn);
@@ -110,21 +114,18 @@ static void message_callback(struct mosquitto *mosq, void *obj, const struct mos
       memcpy(buf, msg->payload, msg->payloadlen);
       buf[msg->payloadlen] = 0;
 
-      f = 0.0;
-      switch (val->type) {
-        case UVRGW_CONF_MQTT_TYPE_SWITCH:
-          if (strcmp("ON", buf) == 0) {
-            f = 1.0;
-          }
-          break;
-        case UVRGW_CONF_MQTT_TYPE_CONTACT:
-          if (strcmp("CLOSED", buf) == 0) {
-            f = 1.0;
-          }
-          break;
-        case UVRGW_CONF_MQTT_TYPE_NUMBER:
-          f = strtod(buf, NULL);
-          break;
+      // drop invalid payloads (e.g. "unknown", "unavailable"), so the
+      // value becomes stale instead of wrong
+      if (!parse_payload(val, buf, &f)) {
+        if (!val->invalid) {
+          syslog(LOG_WARNING, "mqtt value '%s': invalid payload '%s' on topic '%s' ignored.", val->name, buf, val->topic);
+          val->invalid = true;
+        }
+        return;
+      }
+      if (val->invalid) {
+        syslog(LOG_INFO, "mqtt value '%s': valid payload again.", val->name);
+        val->invalid = false;
       }
 
       // dispatch value
@@ -455,3 +456,53 @@ static int send_value(void *v, double f) {
   return 0;
 }
 
+/**
+ * @brief Convert an input payload to a value.
+ *
+ * @param val  Value descriptor (for the type).
+ * @param buf  NUL terminated payload.
+ * @param f    Output: value.
+ * @return     true if the payload is valid for the type: a finite number
+ *             (surrounding whitespace allowed), ON/OFF or CLOSED/OPEN
+ *             (case insensitive).
+ */
+static bool parse_payload(const MQTT_VAL_T *val, const char *buf, double *f) {
+  char *end;
+
+  switch (val->type) {
+    case UVRGW_CONF_MQTT_TYPE_SWITCH:
+      if (strcasecmp("ON", buf) == 0) {
+        *f = 1.0;
+        return true;
+      }
+      if (strcasecmp("OFF", buf) == 0) {
+        *f = 0.0;
+        return true;
+      }
+      return false;
+
+    case UVRGW_CONF_MQTT_TYPE_CONTACT:
+      if (strcasecmp("CLOSED", buf) == 0) {
+        *f = 1.0;
+        return true;
+      }
+      if (strcasecmp("OPEN", buf) == 0) {
+        *f = 0.0;
+        return true;
+      }
+      return false;
+
+    case UVRGW_CONF_MQTT_TYPE_NUMBER:
+      *f = strtod(buf, &end);
+      if (end == buf || !isfinite(*f)) {
+        return false;
+      }
+      while (isspace((unsigned char) *end)) {
+        end++;
+      }
+      return *end == 0;
+
+    default:
+      return false;
+  }
+}
