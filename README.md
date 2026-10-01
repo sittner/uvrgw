@@ -128,6 +128,8 @@ mqtt {
 }
 ```
 
+**MQTT connection:** if the broker is not reachable (also at startup), the connection is retried automatically; connection changes are logged.
+
 **MQTT input payloads** are validated: `number` accepts only a finite number (surrounding whitespace allowed), `switch` only `ON`/`OFF` and `contact` only `CLOSED`/`OPEN` (case insensitive).  Other payloads (e.g. `unknown`, `unavailable`, `nan`) are ignored and logged once per value, so the value becomes stale instead of wrong.  Each value name may only be used once per `mqtt` section.
 
 ### REST / JSON

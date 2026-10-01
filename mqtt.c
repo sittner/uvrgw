@@ -55,6 +55,12 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   MQTT_VAL_T *val;
   int val_idx;
 
+  if (result != 0) {
+    syslog(LOG_WARNING, "mqtt connection to %s:%d refused: %s", conn->host, conn->port, mosquitto_connack_string(result));
+    return;
+  }
+
+  syslog(LOG_INFO, "mqtt connected to %s:%d", conn->host, conn->port);
   conn->connected = true;
 
   if (conn->state_topic != NULL) {
@@ -80,6 +86,9 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
 static void disconnect_callback(struct mosquitto *mosq, void *obj, int result) {
   MQTT_CONN_T *conn = (MQTT_CONN_T *) obj;
 
+  if (conn->connected && result != 0) {
+    syslog(LOG_WARNING, "mqtt connection to %s:%d lost: %s", conn->host, conn->port, mosquitto_strerror(result));
+  }
   conn->connected = false;
 }
 
@@ -349,19 +358,20 @@ static int conn_startup(MQTT_CONN_T *conn) {
     }
   }
 
-  if (mosquitto_connect_async(conn->mosq, conn->host, conn->port, conn->keepalive_period)) {
-    syslog(LOG_INFO, "initial mqtt connection failed");
-  }
-
+  // start the network thread before connecting: if the first connect
+  // fails (e.g. broker not reachable), libmosquitto only retries when the
+  // thread is already running
   if (mosquitto_loop_start(conn->mosq)) {
     syslog(LOG_ERR, "Failed to start mosquitto thread");
-    goto fail3;
+    goto fail2;
+  }
+
+  if (mosquitto_connect_async(conn->mosq, conn->host, conn->port, conn->keepalive_period)) {
+    syslog(LOG_INFO, "initial mqtt connection to %s:%d failed, retrying", conn->host, conn->port);
   }
 
   return 0;
 
-fail3:
-  mosquitto_disconnect(conn->mosq);
 fail2:
   mosquitto_destroy(conn->mosq);
   conn->mosq = NULL;
@@ -388,12 +398,12 @@ void mqtt_shutdown(void) {
  */
 static void conn_shutdown(MQTT_CONN_T *conn) {
   if (conn->mosq != NULL) {
-    if (conn->connected) {
-      if (conn->state_topic != NULL) {
-        mosquitto_publish(conn->mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("OFF"), conn->qos, conn->retain);
-      }
-      mosquitto_disconnect(conn->mosq);
+    if (conn->connected && conn->state_topic != NULL) {
+      mosquitto_publish(conn->mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("OFF"), conn->qos, conn->retain);
     }
+    // always request disconnect: also ends the reconnect attempts of the
+    // network thread while the broker is not reachable
+    mosquitto_disconnect(conn->mosq);
     mosquitto_loop_stop(conn->mosq, false);
     mosquitto_destroy(conn->mosq);
   }
@@ -449,7 +459,10 @@ static int send_value(void *v, double f) {
   }
 
   if (err != MOSQ_ERR_SUCCESS) {
-    syslog(LOG_ERR, "mqtt error %d on send.", err);
+    // not connected: already logged as connection state change
+    if (err != MOSQ_ERR_NO_CONN) {
+      syslog(LOG_ERR, "mqtt send of '%s' failed: %s", val->topic, mosquitto_strerror(err));
+    }
     return -1;
   }
 
