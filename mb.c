@@ -72,6 +72,7 @@ static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double s
 static int value_reg_count(int type);
 static uint32_t get_u32(const MB_SLAVE_VAL_T *val, const uint16_t *regs);
 static void set_u32(const MB_SLAVE_VAL_T *val, uint16_t *regs, uint32_t v);
+static bool sunspec_is_na(const MB_SLAVE_VAL_T *val, const uint16_t *regs);
 
 void mb_init(void) {
   rtu_masters_count = 0;
@@ -168,6 +169,9 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
   blk->regtype = cfg_getint(cfg, "regtype");
   blk->addr = cfg_getint(cfg, "addr");
   blk->count = cfg_getint(cfg, "count");
+  blk->sunspec_na = cfg_getbool(cfg, "sunspec_na");
+  blk->expect_reg = cfg_getint(cfg, "expect_reg");
+  blk->expect_value = cfg_getint(cfg, "expect_value");
 
   if (blk->dir < 0) {
     syslog(LOG_ERR, "modbus block dir not given.");
@@ -192,6 +196,23 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
   if (blk->dir == UVRGW_CONF_VAL_DIR_OUT &&
       (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INREG)) {
     syslog(LOG_ERR, "modbus output block must not use read-only regtype inbit/inreg.");
+    return -1;
+  }
+
+  // checks are only possible on input register blocks
+  if ((blk->sunspec_na || blk->expect_reg >= 0 || blk->expect_value >= 0) &&
+      (blk->dir != UVRGW_CONF_VAL_DIR_IN || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT)) {
+    syslog(LOG_ERR, "modbus block: sunspec_na and expect_reg/expect_value are only allowed for input register blocks.");
+    return -1;
+  }
+
+  if ((blk->expect_reg >= 0) != (blk->expect_value >= 0)) {
+    syslog(LOG_ERR, "modbus block: expect_reg and expect_value must be given together.");
+    return -1;
+  }
+
+  if (blk->expect_reg >= blk->count || blk->expect_value > 0xffff) {
+    syslog(LOG_ERR, "modbus block: expect_reg %d / expect_value %d out of range.", blk->expect_reg, blk->expect_value);
     return -1;
   }
 
@@ -830,7 +851,31 @@ static int read_block_registers(MB_BLOCK_T *blk) {
     return ret;
   }
 
+  // check expected register value (e.g. SunSpec model ID)
+  if (blk->expect_reg >= 0) {
+    if (buf[blk->expect_reg] != blk->expect_value) {
+      if (!blk->unexpected) {
+        syslog(LOG_WARNING, "MODBUS block of slave %d (start %d): register %d is %u, expected %d; values ignored.",
+          slave->id, blk->addr, blk->addr + blk->expect_reg, buf[blk->expect_reg], blk->expect_value);
+        blk->unexpected = true;
+      }
+      return 0;
+    }
+    if (blk->unexpected) {
+      syslog(LOG_INFO, "MODBUS block of slave %d (start %d): register %d as expected again.", slave->id, blk->addr, blk->addr + blk->expect_reg);
+      blk->unexpected = false;
+    }
+  }
+
   for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
+    // drop SunSpec "not implemented" values and values with such a scale factor
+    if (blk->sunspec_na) {
+      if (sunspec_is_na(val, &buf[val->reg]) ||
+          (val->sf_source != NULL && buf[val->sf_source->reg] == 0x8000)) {
+        continue;
+      }
+    }
+
     if (val->sf_source != NULL) {
       sf = pow(10.0, (double) ((int16_t) buf[val->sf_source->reg]));
     } else {
@@ -840,6 +885,30 @@ static int read_block_registers(MB_BLOCK_T *blk) {
   }
 
   return 0;
+}
+
+/**
+ * @brief Check for a SunSpec "not implemented" value.
+ *
+ * @param val   Value descriptor.
+ * @param regs  Raw registers of the value.
+ * @return      true if the raw value is the "not implemented" marker of its
+ *              type (f32 NaN is dropped by the dispatcher anyway).
+ */
+static bool sunspec_is_na(const MB_SLAVE_VAL_T *val, const uint16_t *regs) {
+  switch (val->type) {
+    case UVRGW_CONF_MB_TYPE_S16:
+      return regs[0] == 0x8000;
+    case UVRGW_CONF_MB_TYPE_U16:
+    case UVRGW_CONF_MB_TYPE_BITMASK:
+      return regs[0] == 0xffff;
+    case UVRGW_CONF_MB_TYPE_S32:
+      return get_u32(val, regs) == 0x80000000;
+    case UVRGW_CONF_MB_TYPE_U32:
+      return get_u32(val, regs) == 0xffffffff;
+    default:
+      return false;
+  }
 }
 
 /**

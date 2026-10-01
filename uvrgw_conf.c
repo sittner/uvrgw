@@ -128,6 +128,9 @@ static cfg_opt_t mb_block_opts[] = {
   CFG_INT_CB("regtype", -1, CFGF_NONE, parse_mb_reg_type),
   CFG_INT("addr", -1, CFGF_NONE),
   CFG_INT("count", -1, CFGF_NONE),
+  CFG_BOOL("sunspec_na", cfg_false, CFGF_NONE),
+  CFG_INT("expect_reg", -1, CFGF_NONE),
+  CFG_INT("expect_value", -1, CFGF_NONE),
   CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };

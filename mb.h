@@ -22,6 +22,14 @@
  *    written register that matter must be mapped as outputs.
  *  - scale_factor: a companion register provides the decimal exponent
  *    for another value (value × 10^exponent).
+ *
+ * Input register blocks can optionally
+ *  - drop SunSpec "not implemented" values (@c sunspec_na): s16 0x8000,
+ *    u16/bitmask 0xffff, s32 0x80000000, u32 0xffffffff, and values whose
+ *    scale factor register is 0x8000 (f32 NaN is always dropped),
+ *  - check a register for an expected value (@c expect_reg,
+ *    @c expect_value), e.g. a SunSpec model ID, and ignore the whole block
+ *    on mismatch (protects against shifted register maps).
  */
 
 #ifndef _MB_H_
@@ -77,6 +85,10 @@ typedef struct MB_BLOCK {
   int regtype;               /**< Register type; one of the UVRGW_CONF_MB_REG_TYPE_* constants. */
   int addr;                  /**< Starting Modbus register address. */
   int count;                 /**< Number of registers or coils in this block. */
+  bool sunspec_na;           /**< Drop SunSpec "not implemented" values. */
+  int expect_reg;            /**< Register index (in block) to check, -1 = no check. */
+  int expect_value;          /**< Expected value of @c expect_reg. */
+  bool unexpected;           /**< Last read failed the check (for state logging). */
 
   int values_count;          /**< Number of value definitions in this block. */
   struct MB_SLAVE_VAL *values; /**< Array of value definitions. */
