@@ -58,6 +58,21 @@ static cfg_opt_t mqtt_val_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t mqtt_logger_val_opts[] = {
+  CFG_STR("field", NULL, CFGF_NONE),
+  CFG_FLOAT("scale", 1.0, CFGF_NONE),
+  CFG_END()
+};
+
+static cfg_opt_t mqtt_logger_opts[] = {
+  CFG_STR("topic", NULL, CFGF_NONE),
+  CFG_INT("interval", 300, CFGF_NONE),
+  CFG_INT("stale_timeout", 600, CFGF_NONE),
+  CFG_INT("qos", 1, CFGF_NONE),
+  CFG_SEC("value", mqtt_logger_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
+  CFG_END()
+};
+
 static cfg_opt_t mqtt_opts[] = {
   CFG_STR("host", "localhost", CFGF_NONE),
   CFG_INT("port", 1883, CFGF_NONE),
@@ -69,6 +84,7 @@ static cfg_opt_t mqtt_opts[] = {
   CFG_INT("qos", 0, CFGF_NONE),
   CFG_BOOL("retain", cfg_false, CFGF_NONE),
   CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("logger", mqtt_logger_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 

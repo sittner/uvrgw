@@ -14,6 +14,7 @@
  * dispatch callback for all OUT-direction values.
  */
 #include "mqtt.h"
+#include "mqtt_logger.h"
 #include "can.h"
 #include "mb.h"
 
@@ -171,7 +172,11 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  return uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(MQTT_VAL_T), conn, value_configure);
+  if (uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(MQTT_VAL_T), conn, value_configure) < 0) {
+    return -1;
+  }
+
+  return mqtt_logger_configure(cfg, conn);
 }
 
 /**
@@ -296,6 +301,7 @@ void mqtt_unconfigure(void) {
     free((void *) conn->pwd);
     free((void *) conn->state_topic);
     free(conn->values);
+    mqtt_logger_unconfigure(conn);
   }
   free(conns);
 }
@@ -313,6 +319,10 @@ int mqtt_startup(void) {
     if (conn_startup(conn) < 0) {
       goto fail1;
     }
+  }
+
+  if (mqtt_logger_startup(conns, conns_count) < 0) {
+    goto fail1;
   }
 
   return 0;
@@ -382,6 +392,9 @@ fail1:
 void mqtt_shutdown(void) {
   MQTT_CONN_T *conn;
   int conn_idx;
+
+  // stop logger before the connections are destroyed
+  mqtt_logger_shutdown();
 
   for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
     conn_shutdown(conn);

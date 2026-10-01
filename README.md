@@ -130,6 +130,67 @@ mqtt {
 
 **MQTT connection:** if the broker is not reachable (also at startup), the connection is retried automatically; connection changes are logged.
 
+#### Logger (value snapshots for databases)
+
+A `logger` inside an `mqtt` section publishes a JSON snapshot of selected values every `interval` seconds, aligned to the clock (e.g. xx:00, xx:05, ...):
+
+```
+mqtt {
+  host = "10.0.0.2"
+
+  logger energy {
+    topic         = "uvrgw/log/energy"   # last topic level can be used as table name
+    interval      = 300                  # s, must divide a day (86400 s); default 300
+    stale_timeout = 600                  # s; older values are logged as null; default 600
+    qos           = 1                    # default 1
+
+    value pv_carport_energy { }
+    value hp_heat_energy { scale = 0.001 }                      # e.g. Wh -> kWh
+    value firstfloor_office_env_temp { field = "office_temp" }  # JSON field / column name
+  }
+}
+```
+
+```json
+{"time":1790762700,"pv_carport_energy":16852887.05,"hp_heat_energy":1234.567,"office_temp":21.0}
+```
+
+- `time` is the snapshot time (Unix seconds, aligned).  Values are the current (instantaneous) values; numbers always contain a decimal point, so consumers infer a float type.
+- Values older than `stale_timeout` are `null`.  A value never received within `stale_timeout` after startup is reported once in the log (e.g. misspelled name).
+- Snapshots are only taken while the system clock is synchronised (kernel time status, maintained by ntpd, chrony or systemd-timesyncd).
+- Broker outages: with `qos` ≥ 1, snapshots published while the broker is not connected are kept in memory by libmosquitto and delivered after reconnect (no gaps, no duplicates; lost if uvrgw is restarted meanwhile).  With `qos = 0` they are lost.
+- Field names may only contain `A-Z a-z 0-9 _` (not `time`) and must be unique within a logger.
+
+**Writing snapshots to PostgreSQL with Telegraf** (on the broker node; untested sketch, check against your Telegraf version — especially how the `json_v2` parser handles `null` values):
+
+```toml
+[agent]
+  omit_hostname = true                 # no "host" tag column
+
+[[inputs.mqtt_consumer]]
+  servers = ["tcp://127.0.0.1:1883"]
+  topics = ["uvrgw/log/#"]
+  qos = 1
+  persistent_session = true            # broker keeps snapshots while Telegraf is down
+  client_id = "telegraf-uvrgw"
+  topic_tag = ""                       # no "topic" tag column
+  data_format = "json_v2"
+
+  [[inputs.mqtt_consumer.topic_parsing]]
+    topic = "uvrgw/log/+"
+    measurement = "_/_/measurement"    # table name = last topic level
+
+  [[inputs.mqtt_consumer.json_v2]]
+    [[inputs.mqtt_consumer.json_v2.object]]
+      path = "@this"
+      timestamp_key = "time"
+      timestamp_format = "unix"
+
+[[outputs.postgresql]]
+  connection = "host=localhost user=telegraf password=secret dbname=ems sslmode=disable"
+  # one wide table per logger (measurement); columns are added automatically
+```
+
 **MQTT input payloads** are validated: `number` accepts only a finite number (surrounding whitespace allowed), `switch` only `ON`/`OFF` and `contact` only `CLOSED`/`OPEN` (case insensitive).  Other payloads (e.g. `unknown`, `unavailable`, `nan`) are ignored and logged once per value, so the value becomes stale instead of wrong.  Each value name may only be used once per `mqtt` section.
 
 ### REST / JSON
@@ -440,6 +501,7 @@ sunspec_server {
 - **Counter thread** (`counter.c`): advances power integration counters every second and saves changed counter states every 5 minutes.  Counters are started before and stopped after all other modules, so states are loaded before the first value arrives and saved after the last one.
 - **SunSpec server thread** (`sunspec.c`): waits on the listening socket and client connections (`select()` with 100 ms timeout) and answers requests from a register image rebuilt from the dispatcher's last values.
 - **MQTT** (`mqtt.c`): libmosquitto manages its own background thread for connection, keep-alive and message delivery.
+- **MQTT logger thread** (`mqtt_logger.c`): takes and publishes the logger snapshots at the aligned times.
 
 ---
 
