@@ -1,8 +1,23 @@
 # Implementation guide: Lua calculations and scripts
 
-Status: design, not implemented.  Written as a self-contained brief for the
-implementation sessions.  Step 1 (`calc`) is the immediate goal; step 2
-(`script`) is designed here so step 1 does not need to be reworked later.
+Status: section 3 (shutdown fix) and step 1 (`calc`, module `uvlua.c/h`)
+are implemented; step 2 (`script`) is design only.  Written as a
+self-contained brief for the implementation sessions; step 2 is designed
+here so step 1 does not need to be reworked later.
+
+Decisions taken during step 1 (they override the text below):
+
+- Module `uvlua.c/h`, prefix `uvlua_`: `lua.h` would shadow Lua's own
+  `<lua.h>` (`-I.`), and `lua_*` is the Lua API namespace.
+- Section names: `calc` (step 1) and `lua` (step 2).
+- `max_age` default 0 = no limit (a calc is event driven: if all operands
+  stop, it stops publishing).  "Never received" warning after `max_age`, or
+  10 minutes without it.  Other modules keep their time limits (counter
+  `max_gap`, logger/SunSpec `stale_timeout`), because they use values over
+  time without updates.
+- Only the math library is loaded for step 1 (no string metatable).
+- Lua include path via `LUA_CFLAGS` in the Makefile, because `make
+  CFLAGS=...` overrides `CFLAGS +=`.
 
 ## 1. Goal
 
@@ -276,8 +291,5 @@ Test cases for step 1:
 
 ## 7. Open decisions
 
-- Module/section names: `calc` and `lua` (or `script`).
-- Default `max_age` (10 s proposed; must exceed the slowest operand's update
-  interval — UVR CAN values may only be sent every few minutes).
 - Step 2: register `on()` handlers by running the script at config load, or
   declare inputs/outputs in the config.
