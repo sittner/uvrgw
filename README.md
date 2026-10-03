@@ -501,7 +501,7 @@ sunspec_server {
 - **CAN TX thread** (`can.c`): wakes every 20 ms, checks for pending outbound frames and the timestamp timer.
 - **Modbus thread** (`mb.c`): wakes every 10 ms, polls slaves round-robin and writes queued output values.
 - **REST thread** (`rest.c`): wakes every 100 ms, checks each endpoint's poll interval and performs HTTP GET.
-- **Counter thread** (`counter.c`): advances power integration counters every second and saves changed counter states every 5 minutes.  Counters are started before and stopped after all other modules, so states are loaded before the first value arrives and saved after the last one.
+- **Counter thread** (`counter.c`): advances power integration counters every second and saves changed counter states every 5 minutes.  Counters are started before all other modules, so states are loaded before the first value arrives.  On shutdown the thread is stopped together with the other value sources (see below); the states are saved last, after the last value.
 - **SunSpec server thread** (`sunspec.c`): waits on the listening socket and client connections (`select()` with 100 ms timeout) and answers requests from a register image rebuilt from the dispatcher's last values.
 - **MQTT** (`mqtt.c`): libmosquitto manages its own background thread for connection, keep-alive and message delivery.
 - **MQTT logger thread** (`mqtt_logger.c`): takes and publishes the logger snapshots at the aligned times.
@@ -516,7 +516,7 @@ sunspec_server {
 | `SIGTERM` | Clean shutdown (same as SIGINT) |
 | `SIGHUP` | Currently a no-op (reserved for future config reload) |
 
-Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the main `select()` loop.
+Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the main `select()` loop.  Output modules (MQTT, CAN) are started before the value sources, and on shutdown all threads producing values are stopped before the outputs are destroyed, so no value is sent to a closed connection.
 
 ---
 

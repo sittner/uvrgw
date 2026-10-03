@@ -225,11 +225,15 @@ int counter_startup(void) {
   return 0;
 }
 
-void counter_shutdown(void) {
+void counter_stop(void) {
   if (thread_running) {
     thread_running = false;
     pthread_join(thread, NULL);
   }
+}
+
+void counter_shutdown(void) {
+  counter_stop();
 
   // final save (sources are already stopped)
   if (counter_dir != NULL) {

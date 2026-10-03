@@ -102,7 +102,20 @@ void counter_unconfigure(void);
 int counter_startup(void);
 
 /**
- * @brief Stop the counter thread and save the counter states.
+ * @brief Stop the counter thread.
+ *
+ * The thread publishes power integration counters, so it must be stopped
+ * together with the other value sources, before the outputs are shut down.
+ * The counter states are still updated by source values arriving later
+ * (e.g. via MQTT) and saved by counter_shutdown().
+ */
+void counter_stop(void);
+
+/**
+ * @brief Stop the counter thread (if still running) and save the counter
+ *        states.
+ *
+ * Call after all sources are stopped.
  */
 void counter_shutdown(void);
 
