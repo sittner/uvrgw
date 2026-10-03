@@ -114,6 +114,8 @@ int mqtt_startup(void);
  * @brief Disconnect all MQTT sessions and clean up libmosquitto.
  *
  * Publishes "OFF" to each connection's @c state_topic before disconnecting.
+ * All other value sources (and the counter thread) must be stopped before:
+ * their dispatch callbacks would otherwise publish on destroyed instances.
  */
 void mqtt_shutdown(void);
 

@@ -38,7 +38,8 @@ static int send_value(void *v, double f);
 static bool parse_payload(const MQTT_VAL_T *val, const char *buf, double *f);
 
 static int conn_startup(MQTT_CONN_T *conn);
-static void conn_shutdown(MQTT_CONN_T *conn);
+static void conn_stop(MQTT_CONN_T *conn);
+static void conn_destroy(MQTT_CONN_T *conn);
 
 /**
  * @brief libmosquitto connection callback.
@@ -396,20 +397,27 @@ void mqtt_shutdown(void) {
   // stop logger before the connections are destroyed
   mqtt_logger_shutdown();
 
+  // stop all network threads first: a message received on one connection
+  // can be dispatched to an output value of another connection, so no
+  // instance may be destroyed while any network thread is still running
   for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
-    conn_shutdown(conn);
+    conn_stop(conn);
+  }
+
+  for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
+    conn_destroy(conn);
   }
 
   mosquitto_lib_cleanup();
 }
 
 /**
- * @brief Publish "OFF" to the state topic (if configured), disconnect and destroy
- *        the mosquitto instance.
+ * @brief Publish "OFF" to the state topic (if configured), disconnect and stop
+ *        the network thread of the mosquitto instance.
  *
- * @param conn  Connection to shut down.
+ * @param conn  Connection to stop.
  */
-static void conn_shutdown(MQTT_CONN_T *conn) {
+static void conn_stop(MQTT_CONN_T *conn) {
   if (conn->mosq != NULL) {
     if (conn->connected && conn->state_topic != NULL) {
       mosquitto_publish(conn->mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("OFF"), conn->qos, conn->retain);
@@ -418,7 +426,18 @@ static void conn_shutdown(MQTT_CONN_T *conn) {
     // network thread while the broker is not reachable
     mosquitto_disconnect(conn->mosq);
     mosquitto_loop_stop(conn->mosq, false);
+  }
+}
+
+/**
+ * @brief Destroy the mosquitto instance (network thread must be stopped).
+ *
+ * @param conn  Connection to destroy.
+ */
+static void conn_destroy(MQTT_CONN_T *conn) {
+  if (conn->mosq != NULL) {
     mosquitto_destroy(conn->mosq);
+    conn->mosq = NULL;
   }
 }
 

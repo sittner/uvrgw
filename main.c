@@ -13,6 +13,16 @@
  *
  * On exit (signal or fatal error) all subsystems are shut down in reverse
  * order and all resources are released.
+ *
+ * Startup / shutdown order: values are dispatched synchronously from the
+ * thread of their source into the output callbacks (MQTT publish, Modbus
+ * write, CAN send buffer).  Outputs are therefore started before the value
+ * sources, so the first values are not lost, and on shutdown every thread
+ * producing values (REST, Modbus, CAN RX in the main loop, counter thread)
+ * is stopped before the outputs are destroyed.  Otherwise a source could
+ * still call mosquitto_publish() on a destroyed instance.  The counter
+ * states are saved last, after all sources (including MQTT input) are
+ * stopped.
  */
 #include <stdint.h>
 
@@ -75,7 +85,7 @@ static void sighandler(int sig) {
  * Startup sequence:
  *  1. Create exit eventfd and install signal handlers.
  *  2. Load and parse the configuration file (uvrgw_conf_load()).
- *  3. Start CAN, Modbus, MQTT and REST subsystems.
+ *  3. Start counters, CAN, MQTT, Modbus, REST and SunSpec subsystems.
  *  4. Enter select() event loop until shutdown is requested.
  *  5. Shut down all subsystems and free resources.
  *
@@ -124,12 +134,13 @@ int main(int argc, char **argv)
     goto fail_can;
   }
 
-  if (mb_startup() < 0) {
-    goto fail_mb;
-  }
-
+  // outputs before sources (see file comment)
   if (mqtt_startup() < 0) {
     goto fail_mqtt;
+  }
+
+  if (mb_startup() < 0) {
+    goto fail_mb;
   }
 
   if (rest_startup() < 0) {
@@ -175,10 +186,12 @@ fail_loop:
 fail_sunspec:
   rest_shutdown();
 fail_rest:
-  mqtt_shutdown();
-fail_mqtt:
   mb_shutdown();
 fail_mb:
+  // stop all value producers before the outputs are destroyed
+  counter_stop();
+  mqtt_shutdown();
+fail_mqtt:
   can_shutdown();
 fail_can:
   // counters last: save final states after all sources are stopped
