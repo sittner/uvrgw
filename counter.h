@@ -90,6 +90,14 @@ int counter_configure(cfg_t *cfg);
 void counter_register_disp_cbs(void);
 
 /**
+ * @brief Check whether a counter with the given name is configured.
+ *
+ * @param name  Value name.
+ * @return      true if a counter publishes this name.
+ */
+bool counter_exists(const char *name);
+
+/**
  * @brief Free all resources allocated by counter_configure().
  */
 void counter_unconfigure(void);

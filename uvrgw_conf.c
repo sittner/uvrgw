@@ -19,6 +19,7 @@
 #include "rest.h"
 #include "sunspec.h"
 #include "counter.h"
+#include "uvlua.h"
 #include "utils.h"
 
 #include <math.h>
@@ -233,6 +234,12 @@ static cfg_opt_t counter_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t calc_opts[] = {
+  CFG_STR("expr", NULL, CFGF_NONE),
+  CFG_INT("max_age", 0, CFGF_NONE),
+  CFG_END()
+};
+
 static cfg_opt_t opts[] = {
   CFG_STR("state_dir", NULL, CFGF_NONE),
   CFG_SEC("mqtt", mqtt_opts, CFGF_MULTI),
@@ -242,6 +249,7 @@ static cfg_opt_t opts[] = {
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
   CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("calc", calc_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -460,6 +468,7 @@ int uvrgw_conf_load(const char *file) {
   rest_init();
   sunspec_init();
   counter_init();
+  uvlua_init();
 
   if (can_configure(cfg)) {
     goto fail2;
@@ -485,11 +494,17 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
+  // after counters: calc names are checked against counter names
+  if (uvlua_configure(cfg)) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
   mb_register_disp_cbs();
   mqtt_register_disp_cbs();
   counter_register_disp_cbs();
+  uvlua_register_disp_cbs();
 
   cfg_free(cfg);
   return 0;
@@ -509,6 +524,7 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  uvlua_unconfigure();
   counter_unconfigure();
   sunspec_unconfigure();
   rest_unconfigure();

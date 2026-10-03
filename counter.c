@@ -165,6 +165,10 @@ static COUNTER_T *find_counter(const char *name) {
   return NULL;
 }
 
+bool counter_exists(const char *name) {
+  return find_counter(name) != NULL;
+}
+
 void counter_register_disp_cbs(void) {
   COUNTER_T *c;
   int idx;
