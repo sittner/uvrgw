@@ -18,8 +18,8 @@
  * thread of their source into the output callbacks (MQTT publish, Modbus
  * write, CAN send buffer).  Outputs are therefore started before the value
  * sources, so the first values are not lost, and on shutdown every thread
- * producing values (REST, Modbus, CAN RX in the main loop, counter thread)
- * is stopped before the outputs are destroyed.  Otherwise a source could
+ * producing values (REST, Modbus, CAN RX in the main loop, Lua and counter
+ * thread) is stopped before the outputs are destroyed.  Otherwise a source could
  * still call mosquitto_publish() on a destroyed instance.  The counter
  * states are saved last, after all sources (including MQTT input) are
  * stopped.
@@ -34,6 +34,7 @@
 #include "rest.h"
 #include "sunspec.h"
 #include "counter.h"
+#include "uvlua.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -85,7 +86,7 @@ static void sighandler(int sig) {
  * Startup sequence:
  *  1. Create exit eventfd and install signal handlers.
  *  2. Load and parse the configuration file (uvrgw_conf_load()).
- *  3. Start counters, CAN, MQTT, Modbus, REST and SunSpec subsystems.
+ *  3. Start counters, CAN, MQTT, Lua, Modbus, REST and SunSpec subsystems.
  *  4. Enter select() event loop until shutdown is requested.
  *  5. Shut down all subsystems and free resources.
  *
@@ -139,6 +140,11 @@ int main(int argc, char **argv)
     goto fail_mqtt;
   }
 
+  // calcs publish from the Lua thread: after the outputs
+  if (uvlua_startup() < 0) {
+    goto fail_lua;
+  }
+
   if (mb_startup() < 0) {
     goto fail_mb;
   }
@@ -188,6 +194,8 @@ fail_sunspec:
 fail_rest:
   mb_shutdown();
 fail_mb:
+  uvlua_shutdown();
+fail_lua:
   // stop all value producers before the outputs are destroyed
   counter_stop();
   mqtt_shutdown();

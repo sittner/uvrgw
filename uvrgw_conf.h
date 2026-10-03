@@ -101,6 +101,15 @@ typedef int (* UVRGW_CONF_CONFIG_CHILD_CB)(cfg_t *cfg, void *ctx, void *child);
  */
 typedef int (* UVRGW_CONF_DISPATCH_CB)(void *v, double f);
 
+struct UVRGW_CONF_VAL_DISPATCH;
+
+/**
+ * @brief Hook invoked for every dispatched value (see uvrgw_conf_set_update_hook()).
+ *
+ * @param dp  Dispatcher of the updated value.
+ */
+typedef void (* UVRGW_CONF_UPDATE_HOOK)(struct UVRGW_CONF_VAL_DISPATCH *dp);
+
 /**
  * @brief Associates a protocol value with its dispatch callback.
  */
@@ -108,8 +117,6 @@ typedef struct UVRGW_CONF_DISPATCH_CB_VAL {
   void *val;               /**< Protocol-specific value pointer; used as a source identifier to prevent loopback. */
   UVRGW_CONF_DISPATCH_CB cb; /**< Callback to invoke when the value should be sent to this output; NULL for inputs. */
 } UVRGW_CONF_DISPATCH_CB_VAL_T;
-
-struct UVRGW_CONF_VAL_DISPATCH;
 
 /**
  * @brief Named value dispatcher.
@@ -200,6 +207,31 @@ char *uvrgw_conf_strdup(const char *s);
 UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool alloc_cb);
 
 /**
+ * @brief Look up the dispatcher for the given value name without creating it.
+ *
+ * The dispatcher list is not changed after uvrgw_conf_load(), so this may
+ * be called from any thread afterwards.
+ *
+ * @param name  Logical value name.
+ * @return      Pointer to the dispatcher entry, or NULL if the name is not
+ *              used in the configuration.
+ */
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_find_dispatcher(const char *name);
+
+/**
+ * @brief Set a hook that is called for every dispatched value.
+ *
+ * For consumers that do not know their inputs at configuration time
+ * (e.g. calcs, which learn their operands while evaluating).  Called in
+ * the thread of the source after the value is stored, so it must be quick
+ * and thread-safe.  Only one hook is supported; set it during
+ * configuration.
+ *
+ * @param hook  Hook, or NULL to remove it.
+ */
+void uvrgw_conf_set_update_hook(UVRGW_CONF_UPDATE_HOOK hook);
+
+/**
  * @brief Register a send callback on a dispatcher.
  *
  * Must be called after uvrgw_conf_load() has allocated the callback arrays
@@ -216,7 +248,8 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 /**
  * @brief Dispatch a value to all registered outputs except the source.
  *
- * Stores @p f as the dispatcher's last value, then iterates over all
+ * Stores @p f as the dispatcher's last value, calls the update hook (if
+ * set), then iterates over all
  * entries in @p dp->value_cbs and calls every non-NULL callback whose
  * @c val pointer differs from @p val, preventing the source from receiving
  * its own value back.

@@ -12,6 +12,7 @@
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
 - **SunSpec smart meter emulation** — Modbus TCP server serving virtual three-phase meters (SunSpec models 1 + 213, float), e.g. as secondary meters for a Fronius inverter.  Meter quantities are taken from any input by value name; apparent/reactive power, phase-to-phase voltages and totals are derived.
 - **Persistent counters** — monotonic energy counters from device counters (with reset detection and plausibility check) or by integrating power; state survives restarts and device counter resets.
+- **Calculated values** (embedded Lua 5.4) — derived values defined by a Lua expression over other values (e.g. the sum of three phase counters), published under their own name.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **NTP synchronisation guard** — CAN timestamp frames are only sent when the local NTP daemon reports a synchronised clock.
 - Single configuration file, libconfuse-based syntax.
@@ -30,12 +31,16 @@ The following development libraries must be installed before building:
 | libmosquitto (MQTT client) | `libmosquitto-dev` |
 | libcurl (HTTP client) | `libcurl4-openssl-dev` |
 | json-c (JSON parsing) | `libjson-c-dev` |
+| Lua 5.4 (calculated values) | `liblua5.4-dev` |
 | pthreads, libm | `build-essential` |
 
 ```bash
 sudo apt install build-essential libconfuse-dev libmodbus-dev \
-                 libmosquitto-dev libcurl4-openssl-dev libjson-c-dev
+                 libmosquitto-dev libcurl4-openssl-dev libjson-c-dev \
+                 liblua5.4-dev
 ```
+
+The target device needs the runtime library `liblua5.4-0`.
 
 ---
 
@@ -422,6 +427,39 @@ json {
 }
 ```
 
+### Calculated values
+
+```
+# sum of the three phase counters of a Shelly 3EM
+calc hp_energy_imp {
+  expr = "hp_energy_imp1 + hp_energy_imp2 + hp_energy_imp3"
+}
+
+# operands from different sources: limit their age
+calc pv_surplus {
+  expr    = "max(pv_power - house_power, 0)"
+  max_age = 10000   # ms; older operand -> no result (default 0 = no limit)
+}
+
+# boolean results are published as 1 / 0
+calc tank_hot {
+  expr = "tank_temp >= 55"
+}
+```
+
+A `calc` evaluates a [Lua 5.4 expression](https://www.lua.org/manual/5.4/manual.html#3.4) whenever one of its operands is updated and publishes the result under its own name (e.g. for MQTT, loggers, SunSpec meters or as counter source).
+
+- **Values:** every global name of the expression that is not a provided function is the last value of that name.  Value names used in expressions must therefore be valid Lua identifiers (`A-Z a-z 0-9 _`, not starting with a digit).
+- **Dependencies** are not declared: each evaluation records the values it reads, and the calc is evaluated again when one of them is updated.  In conditional expressions (e.g. `sel > 1 and b or c`) only the values of the branch taken are dependencies; the condition is read in any case, so the calc follows when it changes.
+- **Checks:** syntax errors and invalid names are config errors.  All calcs are evaluated once at startup: an unknown value name (e.g. misspelled) is reported as evaluation error as soon as it is read.  A cyclic dependency between calcs is detected when it is first read; the calc closing the cycle is disabled (logged).
+- **Provided functions:** `math` (Lua math library), `min`, `max`, `abs`, `floor`, `ceil` and `clamp(x, lo, hi)`.  Nothing else is available (no `io`, `os`, `require`, string methods, global assignments).
+- **Result:** numbers are published as float (also integers, e.g. `7 // 2` → 3.0), booleans as 1 / 0.  Other results (nil, strings), NaN/inf and runtime errors are not published, so the value becomes stale; this is logged once per state change, as is the recovery.
+- **max_age:** without it, the last value is used however old it is.  If all values stop, the calc stops publishing and its value becomes stale anyway; but if the values come from different sources and only one of them stops, its last value stays in the result unnoticed — set `max_age` (larger than the slowest update interval of the values) for such calcs.
+- A value not yet received suppresses the result; if it is not received within `max_age` (10 minutes without `max_age`) after startup, this is logged once.
+- Calc names must be valid Lua identifiers, not a keyword or provided function, and unique; a calc must not have the name of a counter or another input value.  Calcs can use other calcs, counters can use calcs as source and calcs can use counters.
+- Each evaluation is limited to 1 000 000 Lua instructions (endless loops are aborted with an error), the Lua state to 16 MB.
+- Values updated one after another (e.g. the three phases of one REST poll) can lead to up to one evaluation per value with a mix of old and new values; updates arriving while an evaluation runs are coalesced.
+
 ### SunSpec meter emulation
 
 ```
@@ -484,6 +522,7 @@ sunspec_server {
          │  per-REST-endpoint polling thread            │
          │  per-SunSpec-server thread                   │
          │  counter thread                              │
+         │  Lua thread (calc)                           │
          │  per-MQTT-connection background thread       │
          │         (managed by libmosquitto)            │
          │                                              │
@@ -502,6 +541,7 @@ sunspec_server {
 - **Modbus thread** (`mb.c`): wakes every 10 ms, polls slaves round-robin and writes queued output values.
 - **REST thread** (`rest.c`): wakes every 100 ms, checks each endpoint's poll interval and performs HTTP GET.
 - **Counter thread** (`counter.c`): advances power integration counters every second and saves changed counter states every 5 minutes.  Counters are started before all other modules, so states are loaded before the first value arrives.  On shutdown the thread is stopped together with the other value sources (see below); the states are saved last, after the last value.
+- **Lua thread** (`uvlua.c`): one Lua state for all calcs.  A dispatcher update hook marks the calcs that read the updated value (recorded by their last evaluation) as changed and wakes the thread, which evaluates the changed calcs in dependency order (once per change, also for calcs using other calcs) and publishes the results.
 - **SunSpec server thread** (`sunspec.c`): waits on the listening socket and client connections (`select()` with 100 ms timeout) and answers requests from a register image rebuilt from the dispatcher's last values.
 - **MQTT** (`mqtt.c`): libmosquitto manages its own background thread for connection, keep-alive and message delivery.
 - **MQTT logger thread** (`mqtt_logger.c`): takes and publishes the logger snapshots at the aligned times.
@@ -516,7 +556,7 @@ sunspec_server {
 | `SIGTERM` | Clean shutdown (same as SIGINT) |
 | `SIGHUP` | Currently a no-op (reserved for future config reload) |
 
-Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the main `select()` loop.  Output modules (MQTT, CAN) are started before the value sources, and on shutdown all threads producing values are stopped before the outputs are destroyed, so no value is sent to a closed connection.
+Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the main `select()` loop.  Output modules (MQTT, CAN) are started before the value sources, and on shutdown all threads producing values (including the Lua thread) are stopped before the outputs are destroyed, so no value is sent to a closed connection.
 
 ---
 

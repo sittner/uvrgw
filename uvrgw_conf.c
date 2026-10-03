@@ -19,6 +19,7 @@
 #include "rest.h"
 #include "sunspec.h"
 #include "counter.h"
+#include "uvlua.h"
 #include "utils.h"
 
 #include <math.h>
@@ -233,6 +234,12 @@ static cfg_opt_t counter_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t calc_opts[] = {
+  CFG_STR("expr", NULL, CFGF_NONE),
+  CFG_INT("max_age", 0, CFGF_NONE),
+  CFG_END()
+};
+
 static cfg_opt_t opts[] = {
   CFG_STR("state_dir", NULL, CFGF_NONE),
   CFG_SEC("mqtt", mqtt_opts, CFGF_MULTI),
@@ -242,6 +249,7 @@ static cfg_opt_t opts[] = {
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
   CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("calc", calc_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -315,6 +323,7 @@ static const MAP_ITEM_T counter_sign_map[] = {
 };
 
 static UVRGW_CONF_VAL_DISPATCH_T *disp;
+static UVRGW_CONF_UPDATE_HOOK update_hook;
 static char *state_dir;
 
 static int parse_map(const MAP_ITEM_T *map, cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
@@ -444,6 +453,7 @@ int uvrgw_conf_load(const char *file) {
   }
 
   disp = NULL;
+  update_hook = NULL;
 
   // state directory: config, systemd StateDirectory= or default
   state_dir = uvrgw_conf_strdup(cfg_getstr(cfg, "state_dir"));
@@ -460,6 +470,7 @@ int uvrgw_conf_load(const char *file) {
   rest_init();
   sunspec_init();
   counter_init();
+  uvlua_init();
 
   if (can_configure(cfg)) {
     goto fail2;
@@ -482,6 +493,11 @@ int uvrgw_conf_load(const char *file) {
   }
 
   if (counter_configure(cfg)) {
+    goto fail2;
+  }
+
+  // after counters: calc names are checked against counter names
+  if (uvlua_configure(cfg)) {
     goto fail2;
   }
 
@@ -509,6 +525,8 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  update_hook = NULL;
+  uvlua_unconfigure();
   counter_unconfigure();
   sunspec_unconfigure();
   rest_unconfigure();
@@ -631,6 +649,33 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
   return dp;
 }
 
+/**
+ * @brief Look up the dispatcher node for @p name.
+ *
+ * @param name  Value name.
+ * @return      Dispatcher node pointer, or NULL if not found.
+ */
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_find_dispatcher(const char *name) {
+  UVRGW_CONF_VAL_DISPATCH_T *dp;
+
+  for (dp = disp; dp != NULL; dp = dp->next) {
+    if (strcmp(dp->name, name) == 0) {
+      return dp;
+    }
+  }
+
+  return NULL;
+}
+
+/**
+ * @brief Set the hook called for every dispatched value.
+ *
+ * @param hook  Hook, or NULL.
+ */
+void uvrgw_conf_set_update_hook(UVRGW_CONF_UPDATE_HOOK hook) {
+  update_hook = hook;
+}
+
 static void init_dispatcher(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
 
@@ -690,6 +735,10 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
   dp->last_update = utl_get_ticks();
   dp->updated = true;
   pthread_mutex_unlock(&dp->last_lock);
+
+  if (update_hook != NULL) {
+    update_hook(dp);
+  }
 
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {

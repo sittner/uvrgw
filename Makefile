@@ -14,6 +14,7 @@ SRC = \
 	ntp_check.c \
 	sunspec.c \
 	counter.c \
+	uvlua.c \
 
 OBJ = $(SRC:.c=.o)
 
@@ -25,7 +26,11 @@ CFLAGS += -Wall
 
 CFLAGS += -g
 
+# separate variable: not overridden by CFLAGS given on the command line
+LUA_CFLAGS = $(shell pkg-config --cflags lua5.4)
+
 LIBS += -lpthread -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c -lm
+LIBS += $(shell pkg-config --libs lua5.4)
 
 .PHONY: all clean realclean install
 
@@ -35,7 +40,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(LDFLAGS) -o $(TARGET) $(OBJ) $(LIBS)
 
 %.o: %.c
-	$(CC) -c $(CFLAGS) -o $@ $< 
+	$(CC) -c $(CFLAGS) $(LUA_CFLAGS) -o $@ $< 
 
 clean:
 	rm -f $(OBJ)
