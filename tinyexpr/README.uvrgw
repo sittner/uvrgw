@@ -1,0 +1,14 @@
+tinyexpr - expression parser used by the eval module (eval.c)
+
+Upstream:  https://github.com/codeplea/tinyexpr
+Release:   v1.1.1
+Commit:    6d2233ce14dca063994708a91b3b98e24e8aa0c3
+Licence:   zlib (see LICENSE)
+
+tinyexpr.c, tinyexpr.h and LICENSE are copied unmodified from the release.
+Examples, tests and benchmarks are not included.
+
+Compile options are set in the uvrgw Makefile (not in tinyexpr.c):
+  -DTE_POW_FROM_RIGHT   '^' is right associative and binds tighter than
+                        unary minus (-2^2 = -4, 2^3^2 = 512)
+TE_NAT_LOG is not defined, so 'log' is log10.

@@ -14,6 +14,7 @@ SRC = \
 	ntp_check.c \
 	sunspec.c \
 	counter.c \
+	tinyexpr/tinyexpr.c \
 
 OBJ = $(SRC:.c=.o)
 
@@ -25,6 +26,12 @@ CFLAGS += -Wall
 
 CFLAGS += -g
 
+# not part of CFLAGS, so they are kept if CFLAGS is given on the command line
+INCLUDES = -Itinyexpr
+
+# tinyexpr options (tinyexpr.c stays unmodified, see tinyexpr/README.uvrgw)
+tinyexpr/tinyexpr.o: DEFINES += -DTE_POW_FROM_RIGHT
+
 LIBS += -lpthread -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c -lm
 
 .PHONY: all clean realclean install
@@ -35,7 +42,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(LDFLAGS) -o $(TARGET) $(OBJ) $(LIBS)
 
 %.o: %.c
-	$(CC) -c $(CFLAGS) -o $@ $< 
+	$(CC) -c $(CFLAGS) $(DEFINES) $(INCLUDES) -o $@ $<
 
 clean:
 	rm -f $(OBJ)
