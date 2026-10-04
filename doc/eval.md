@@ -13,7 +13,8 @@ TA controllers (comparison, hysteresis, timers, logic, scaling, ...).
 
 ```
 eval solar {
-  period = 1000
+  period  = 1000
+  max_age = 10000
   value diff       { expr = "collector_temp - tank_temp"  local = true }
   value solar_pump { expr = "hyst(solar_pump, diff, 8, 4) && tank_temp < 90" }
   value pump_on_s  { expr = "if(solar_pump, pump_on_s + dt, 0)" }
@@ -26,21 +27,22 @@ eval hp_energy {
 ```
 
 Expressions are evaluated with [tinyexpr](https://github.com/codeplea/tinyexpr)
-(C, zlib licence).  An earlier attempt with embedded Lua (branch
-`lua-calc`) was dropped: a Lua expression does not tell which values it
-reads, so dependencies had to be recorded at runtime (dispatcher hook,
-locked dependency lists, runtime cycle handling), and the interpreter
-needed a sandbox.  tinyexpr binds all names at compile time: the values an
-expression reads are known at config load, unknown names are config
-errors, and there is nothing to sandbox (no loops, no allocation during
-evaluation).
+(C, zlib licence), release v1.1.1, copied into the repository (4.8).  An
+earlier attempt with embedded Lua (branch `lua-calc`) was dropped: a Lua
+expression does not tell which values it reads, so dependencies had to be
+recorded at runtime (dispatcher hook, locked dependency lists, runtime
+cycle handling), and the interpreter needed a sandbox.  tinyexpr binds all
+names at compile time: the values an expression reads are known at config
+load, unknown names are config errors, and there is nothing to sandbox (no
+loops, no allocation during evaluation).
 
 ## 2. Current architecture (what the new module must fit into)
 
 Read `README.md` and these files before starting: `uvrgw_conf.c/h` (config
 parser, dispatcher), `counter.c/h` (closest existing pattern: derived
 values, own thread, dispatcher in and out), `mqtt_logger.c/h` (reads
-values via `uvrgw_conf_get_val()`), `main.c` (startup/shutdown order).
+values via `uvrgw_conf_get_val()`, stale handling), `main.c`
+(startup/shutdown order).
 
 ### 2.1 Value dispatcher (`uvrgw_conf.c/h`)
 
@@ -60,6 +62,9 @@ All values are linked by name.  Relevant API:
 Callbacks run in the thread of the source (Modbus, REST, CAN main loop,
 libmosquitto, counter thread).  They must be quick and thread-safe.
 
+The dispatcher does not know whether a module produces or consumes a
+name.  This guide adds that information (4.2).
+
 ### 2.2 Module pattern
 
 Each module provides `*_init()`, `*_configure(cfg)`,
@@ -78,7 +83,8 @@ Each module provides `*_init()`, `*_configure(cfg)`,
 - Runtime problems are logged once per state change ("... invalid",
   "... valid again"), never per occurrence.
 - Invalid/missing data → value is not published (becomes stale), never a
-  substitute value.
+  substitute value.  A derived value must not outlive its inputs: if an
+  input is stale, the derived value is not published either.
 - Titled sections that must be unique use `CFGF_NO_TITLE_DUPES`.
 - README: feature line, config section with example and notes,
   architecture overview entry.
@@ -91,7 +97,7 @@ Each module provides `*_init()`, `*_configure(cfg)`,
 eval <name> {
   period   = <ms>                 # evaluate every <ms>
   triggers = {"<value>", ...}     # or: evaluate when one of these values is updated
-  max_age  = <ms>                 # optional, 0 (default) = no limit
+  max_age  = <ms>                 # max. age of outside values, default 600000, 0 = no limit
 
   value <value name> {
     expr  = "<expression>"        # required
@@ -108,7 +114,7 @@ eval <name> {
   - `period`: evaluate every `period` ms.
   - `triggers`: evaluate when one of the listed values is updated.
   - neither: all outside values (see 4.1) read by the expressions are
-    triggers.
+    triggers ("default triggers").
   - `period` and `triggers` together are a config error (may be allowed
     later as "on trigger, and at least every period").
 - `value` sections are evaluated in config order.  This is why there is
@@ -118,14 +124,17 @@ eval <name> {
   published); the name can be reused in other evals.
 - `init`: value before the first evaluation, for values that read
   themselves or are read by an earlier `value` of the same eval.
-- `max_age`: if an outside value read by the eval is older, the eval is
-  skipped (4.4).
+- `max_age`: a value is not evaluated if an outside value it depends on
+  is older (4.4).  The default (600000 ms = 10 min) matches the default
+  `stale_timeout` of the MQTT logger and is long enough for MQTT sensors
+  that publish rarely; control logic sets a tighter limit.
 
 Config errors: expression syntax error or unknown name (with the position
 reported by tinyexpr), invalid value name, a value name defined twice
-(in the same or another eval, or equal to a counter name), no `value`
-section, `period` and `triggers` together, `period <= 0`, unknown trigger
-name, trigger naming a value of the same eval, trigger cycle (4.3).
+(in the same or another eval), a value name produced by another module
+(4.2), no `value` section, `period` and `triggers` together,
+`period <= 0`, `max_age < 0`, unknown trigger name, trigger naming a value
+of the same eval, trigger cycle (4.3).
 
 ## 4. Design
 
@@ -133,25 +142,39 @@ name, trigger naming a value of the same eval, trigger cycle (4.3).
 
 A name in an expression is resolved in this order:
 
-1. `dt`: seconds since the previous evaluation of this eval (4.5).
+1. `dt`: seconds since the previous evaluation of this value (4.5).
 2. A value of the same eval (local or not): its current state.  A value
    defined further up has the result of this evaluation, the value itself
    and values further down have the result of the previous one (or
    `init`).
 3. An **outside value**: any other dispatcher name known in the
    configuration, including values of other evals and counters.
-4. An expression function (4.6).
+4. An expression function (4.6): the tinyexpr built-ins and the functions
+   added by uvrgw.
 
 Names must be identifiers as tinyexpr accepts them: a letter, then
-letters, digits and `_`.  Value names of an eval must follow this rule
-and must not be `dt` or the name of an expression function.  Outside
-values with other names cannot be used in expressions.
+letters, digits and `_`.
+
+tinyexpr looks up the variable list before its built-in functions, so a
+variable named like a built-in silently replaces it in every expression
+(tested: a variable `e` makes `e` return its value instead of 2.718...).
+Therefore:
+
+- Value names of an eval must not be `dt` or the name of an expression
+  function (built-in or uvrgw): config error.
+- Outside values whose name is not an identifier, is `dt`, or equals the
+  name of an expression function are not put into the variable list.
+  They cannot be used in expressions; using one gives an unknown name
+  error or calls the function.  Keep the list of tinyexpr built-in names
+  in `eval.c` (from the `functions[]` table of `tinyexpr.c` v1.1.1: `abs
+  acos asin atan atan2 ceil cos cosh e exp fac floor ln log log10 ncr npr
+  pi pow sin sinh sqrt tan tanh`).
 
 Unknown names are compile errors, so typos are found at config load.
 "Known" means a dispatcher exists, i.e. any module references the name.
 A name that exists but is never received is reported at runtime (4.4).
 
-### 4.2 Compilation
+### 4.2 Compilation and dependencies
 
 `eval_configure()` runs after all other `*_configure()` calls, so all
 dispatcher names exist, in two passes over all evals:
@@ -160,25 +183,44 @@ dispatcher names exist, in two passes over all evals:
    (`uvrgw_conf_get_dispatcher(name, false)`), so evals can read values of
    evals defined later in the file.
 2. Per eval, build the `te_variable` list (`dt`, own values, outside
-   values, expression functions) and compile each expression with
-   `te_compile()`.
+   values except the excluded names of 4.1, uvrgw functions) and compile
+   each expression with `te_compile()`.
 
 tinyexpr binds a variable to the address of a `double`.  Each eval has an
 array of doubles ("slots"): `dt`, one per own value, one per outside
 value.  The dispatcher list has to be made accessible for this (new
 accessor in `uvrgw_conf.c`, e.g. returning the list head).
 
-After compiling, the outside values actually read are determined by
-walking the compiled expression trees (`te_expr` is public: nodes of type
-`TE_VARIABLE` carry the bound address; function and closure nodes have
-`type & 7` parameters).  Only these are refreshed before an evaluation,
-checked for `max_age`, and used as default triggers.  Verify the tree
-walk against the pinned tinyexpr version (constants are folded at compile
-time).
+**Dependencies.**  After compiling, walk each compiled expression tree
+(`te_expr` is public: nodes of type `TE_VARIABLE` carry the bound
+address; function and closure nodes have `type & 7` parameters) and
+record per value:
 
-Triggers: `uvrgw_conf_get_dispatcher(name, true)` for each trigger, and a
-callback registered in `eval_register_disp_cbs()` with the eval as `val`
-pointer.
+- the outside values it reads directly,
+- the own values defined **above** it that it reads (they carry the
+  result of this evaluation, so their validity propagates, 4.4).
+
+Own values read from the same or a later position are previous state and
+are not dependencies.  The outside values read by any value of the eval
+are the ones refreshed before an evaluation and used as default triggers.
+Constants are folded at compile time (`optimize()` replaces pure function
+nodes with only constant parameters); variable nodes are never folded,
+so the walk finds every variable read.
+
+**Producers.**  Add a "produced" flag to the dispatcher, set by a new
+function (e.g. `uvrgw_conf_set_producer(dp, owner)`) that returns an
+error if the name already has a producer.  Every module calls it for the
+names it publishes: Modbus/CAN/REST/MQTT inputs, counters, evals (pass 1).
+A name produced twice is a config error naming both owners ("value 'x'
+of eval 'a' is already produced by modbus_tcp 'y'").  This replaces the
+counter-only check and also catches two inputs publishing the same name,
+which today interleave silently.  Check where each module creates the
+dispatchers of its inputs; outputs and sources read by counters, the
+logger and SunSpec are consumers and do not call it.
+
+Triggers: `uvrgw_conf_get_dispatcher(name, true)` for each trigger
+(explicit or default), and a callback registered in
+`eval_register_disp_cbs()` with the eval as `val` pointer.
 
 ### 4.3 Thread and triggers
 
@@ -197,42 +239,67 @@ a source.
 - At startup all evals are evaluated once.
 
 Trigger cycles: eval A triggers eval B if a trigger of B is a value
-published by A.  A cycle in this graph would evaluate forever, so it is a
-config error (depth first search at config load).  Periodic evals have no
-triggers and are not part of the graph: reading each other's values is
-fine, they see the result of the other's last evaluation.  A cycle
-through another module (e.g. eval → counter → eval) is not detected.
+published by A.  "Trigger" means the effective triggers: the `triggers`
+list, or the default triggers (all outside values read) of an eval
+without `period` and `triggers`.  A cycle in this graph would evaluate
+forever, so it is a config error (depth first search at config load,
+message naming the evals of the cycle).  Example: two evals without
+`period`/`triggers` that read each other's values form a cycle.  Periodic
+evals have no triggers and are not part of the graph: reading each
+other's values is fine, they see the result of the other's last
+evaluation.  A cycle through another module (e.g. eval → counter → eval)
+is not detected.
 
 Results are published with `uvrgw_conf_disp_val(dp, eval, f)`.  Every
-evaluation publishes all non-local values, also unchanged ones (counters
-and the logger judge freshness by updates).
+evaluation publishes all non-local values that were evaluated, also
+unchanged ones (counters and the logger judge freshness by updates).
 
 ### 4.4 Evaluation
 
+Validity is decided per value, not per eval, so a dead input only stops
+the values that depend on it, and stale inputs never produce fresh
+looking outputs.
+
 1. Copy the outside values read by the eval into their slots
-   (`uvrgw_conf_get_val()`).  If one was never received, or is older than
-   `max_age` (if set): skip the evaluation.
-2. Set `dt`, save the slots of the own values.
-3. Evaluate the `value` sections in order (`te_eval()`), each result goes
-   into the slot of the value.  A result that is not finite (NaN/inf, e.g.
-   division by zero) aborts the evaluation: the saved slots are restored
-   and nothing is published.
-4. Publish the non-local values.
+   (`uvrgw_conf_get_val()`) and mark each as valid or invalid: invalid if
+   never received, or older than `max_age` (if not 0).
+2. Evaluate the `value` sections in order.  For each value:
+   - If one of its outside values is invalid, or one of its own-value
+     dependencies (above it) was not updated in this evaluation: the
+     value is **skipped**.
+   - Otherwise set `dt` (4.5) and evaluate (`te_eval()`).  If the result
+     is not finite (NaN/inf), the value is **skipped**.
+   - Otherwise store the result in the slot of the value; it is
+     **updated**.
+   - A skipped value keeps its previous state in its slot (values further
+     down that read it as previous state still see a number) and is not
+     published.
+3. Publish the updated non-local values.
 
-A skipped or aborted evaluation leaves the state untouched and publishes
-nothing, so the values of the eval become stale for their consumers.
+Only the final result of a value is checked, not intermediate results:
+`if(x != 0, a / x, 0)` is a working guard although `if()` evaluates both
+arguments and `a / x` is inf for `x = 0`.
 
-Logging, once per state change per eval: "value '<x>' is stale / result of
-'<v>' is not finite, not evaluated" and "valid again".  A value never
-received is reported once after `max_age`, or after 10 minutes without
-`max_age` (as the logger does), not at the first skipped evaluation:
-values are normally missing for a moment after startup.
+A skipped value is not published, so it becomes stale for its consumers,
+and its dependents in the same eval and in other evals are skipped too.
+
+Logging, once per state change per value: "eval '<e>': value '<v>' not
+evaluated: input '<x>' is stale" / "... result is not finite" / "... '<u>'
+not evaluated" (dependency) and "eval '<e>': value '<v>' valid again".
+Log the cause only for the first value of a chain where it makes sense;
+at least avoid logging the same stale input once per dependent value
+(e.g. log stale inputs once per eval and input, and per value only
+non-finite results).  A value never received is reported once after
+`max_age`, or after 10 minutes with `max_age = 0` (as the logger does),
+not at the first skipped evaluation: values are normally missing for a
+moment after startup.
 
 ### 4.5 `dt`
 
-Seconds (double) since the previous completed evaluation of the eval; 0
-for the first evaluation and for the first one after a skipped or aborted
-evaluation.  Time dependent expressions use it instead of assuming a
+Seconds (double) since the previous update of the value being evaluated;
+0 for its first evaluation and for the first one after it was skipped.
+`dt` is a single slot set before each `te_eval()` (evaluation is
+sequential).  Time dependent expressions use it instead of assuming a
 period, so they work in all modes and do not jump after a gap:
 
 ```
@@ -249,7 +316,22 @@ From tinyexpr: `+ - * / % ^`, `< <= > >= == !=`, `&& || !`, `abs`,
 functions, `pi`, `e`.  `&&` and `||` evaluate both sides (no short
 circuit; harmless, expressions have no side effects).
 
-Added by uvrgw (registered as tinyexpr functions):
+Precedence, highest first: unary `- + !`, `^`, `* / %`, `+ -`,
+`< <= > >=`, `== !=`, `&&`, `||`.
+
+tinyexpr behaviour to know (tested with v1.1.1):
+
+- `tinyexpr.c` is compiled with `TE_POW_FROM_RIGHT` (4.8), so `^` is
+  right associative and binds tighter than unary minus:
+  `-2^2 = -4`, `2^3^2 = 512` (without the define: 4 and 64).
+- `log` is `log10` (`TE_NAT_LOG` not defined).  Document `ln` and
+  `log10` only; `log` stays available but ambiguous.
+- `!` binds tighter than `+`: `!0+1 = 2`.
+- One-argument functions also work without parentheses: `abs -3 = 3`.
+- `(a, b)` is a comma operator and returns `b`.
+- Division by zero gives inf, not an error (handled by 4.4).
+
+Added by uvrgw (registered as tinyexpr functions, `TE_FLAG_PURE`):
 
 | Function | Result |
 |---|---|
@@ -276,16 +358,41 @@ are added when the first use case needs them.
 
 ### 4.8 Build
 
-- tinyexpr as git submodule `tinyexpr/` (https://github.com/codeplea/tinyexpr),
-  pinned to a commit of `master` that has the comparison and logic
-  operators (older versions do not).
+- tinyexpr v1.1.1 is copied into the repository (no submodule):
+  `tinyexpr/tinyexpr.c`, `tinyexpr/tinyexpr.h`, `tinyexpr/LICENSE`, plus
+  `tinyexpr/README.uvrgw` naming the upstream URL, the release tag and
+  commit (`6d2233ce14dca063994708a91b3b98e24e8aa0c3`), and stating that the files
+  are unmodified.  Do not copy the examples and tests (they have their
+  own `main()`).  v1.1.1 contains the comparison and logic operators;
+  `master` differs from it only in copyright headers.
+- The compile options are set in the `Makefile`, not by editing
+  `tinyexpr.c` (the files stay unmodified): `-DTE_POW_FROM_RIGHT` for
+  `tinyexpr/tinyexpr.o` only.
 - `Makefile`: add `tinyexpr/tinyexpr.c` to the sources and
-  `-Itinyexpr` to the include path (in a variable that is not overridden
-  by `CFLAGS` given on the command line).  Only this file is compiled;
-  the repository also contains examples and tests with their own `main()`.
-- README build instructions: `git clone --recurse-submodules`, or
-  `git submodule update --init` in an existing clone.
+  `-Itinyexpr` to the include path, both in variables that are not
+  overridden by `CFLAGS` given on the command line (the test build passes
+  its own `CFLAGS`).  v1.1.1 compiles warning free with the test flags
+  and `-DTE_POW_FROM_RIGHT` (checked).
+- README: the licence section ("No license is currently specified")
+  gets a note on the bundled tinyexpr (zlib, `tinyexpr/LICENSE`).  No
+  change to the build instructions (no submodule, no new package).
 - Module `eval.c/h`, prefix `eval_`.
+
+### 4.9 README
+
+The README section for `eval` (written with the implementation) covers,
+besides config example and options:
+
+- evaluation modes and default triggers,
+- names in expressions (4.1), including the rule that outside values
+  named like a function or `dt` cannot be used,
+- per-value validity and `max_age` (4.4): a value whose inputs are stale
+  is not published, dependents are skipped too,
+- operators, precedence and functions (4.6), including the guard example
+  `if(x != 0, a / x, 0)` and that only the final result of a value is
+  checked for NaN/inf,
+- `dt` and explicit state (`hyst(solar_pump, ...)`),
+- state is lost on restart; safety limits belong in the controller (7).
 
 ## 5. Testing
 
@@ -308,40 +415,58 @@ writes:
 
 Test cases:
 
-1. Sum of three values with default triggers (three evaluations per
+1. Sum of three values with default triggers (up to three evaluations per
    poll) and with `triggers` on the last one (one evaluation).
 2. Periodic eval: hysteresis and run time counter as in section 1;
    `dt` matches the period; `init` is used in the first evaluation.
 3. Value order: a value reads one defined above (new result) and one
    defined below (previous result).
-4. Outside value never received / older than `max_age` → nothing
-   published; recovery; `dt` is 0 after the gap.
-5. Division by zero → evaluation aborted, state restored, logged once,
-   recovery logged.
-6. Config errors of section 3, each with a clear message (syntax error
-   and unknown name with position).
-7. Trigger cycle between two evals → config error; the same two evals
-   with `period` load and run.
-8. Eval value as counter source and counter as eval input; eval reading
-   a non-local value of another eval; local names reused in two evals.
-9. Shutdown while values arrive (no hang, no crash; run under valgrind
-   once).
+4. Per-value validity: eval with two independent values and one
+   dependent value; one input stops → only the values depending on it
+   stop being published (also when it is read via a value above), the
+   other one continues; recovery; `dt` is 0 after the gap; log messages
+   once per state change and not repeated per dependent value.
+5. Periodic eval with the default `max_age` and an input that stops:
+   output stops after 600 s (shortened `max_age` in the test).
+   `max_age = 0`: output continues.
+6. Division by zero → value skipped, previous state kept, dependents
+   skipped, logged once, recovery logged; the guard
+   `if(x != 0, a / x, 0)` publishes 0.
+7. Config errors of section 3, each with a clear message (syntax error
+   and unknown name with position); value name equal to a Modbus/REST
+   input or a counter; two inputs of different modules with the same
+   name (now a config error, check the production config still loads).
+8. Name shadowing: an outside value named `e` or `min` → `e` is still
+   2.718..., `min()` still works; an eval value named `e` → config error.
+9. tinyexpr options: `-2^2 = -4`, `2^3^2 = 512`.
+10. Trigger cycle between two evals with explicit triggers and between
+    two evals with default triggers → config error; the same evals with
+    `period` load and run.
+11. Eval value as counter source and counter as eval input; eval reading
+    a non-local value of another eval; local names reused in two evals.
+12. Shutdown while values arrive (no hang, no crash; run under valgrind
+    once).
 
 ## 6. Plan
 
-1. Add the tinyexpr submodule and build integration.
-2. `eval.c/h`: config, compilation, thread, triggers, evaluation,
-   expression functions; dispatcher list accessor; wiring in
+1. Copy tinyexpr v1.1.1, build integration, README licence note.
+2. Producer flag in the dispatcher and `uvrgw_conf_set_producer()` calls
+   in all producing modules (own commit; verify the production config
+   still loads).
+3. `eval.c/h`: config, compilation, dependencies, thread, triggers,
+   evaluation, expression functions; dispatcher list accessor; wiring in
    `uvrgw_conf.c` and `main.c`.
-3. README; tests of section 5; production config: `hp_energy_imp` /
+4. README (4.9); tests of section 5; production config: `hp_energy_imp` /
    `hp_energy_exp` as evals.
 
 ## 7. Decisions and limits
 
-- `max_age` defaults to 0 (no limit).  A limit by default would stop the
-  outputs of an eval when one input stops, although the others are still
-  valid; that is the bigger problem.  Evals that must not compute from old
-  inputs set `max_age`.
+- `max_age` defaults to 600000 ms (10 min).  A derived value must not be
+  published from stale inputs, otherwise consumers (logger, counters)
+  treat it as fresh.  Because validity is per value (4.4), a stale input
+  only stops the values depending on it, so a default limit does not
+  stop unrelated outputs of the eval.  `max_age = 0` disables the check
+  for evals that intentionally use the last known value.
 - State is lost on restart (values start at `init`).  Accepted for now;
   persistence via `state_dir` only if a use case needs it.
 - If uvrgw stops, outputs keep their last state.  Safety limits (e.g.
