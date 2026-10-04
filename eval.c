@@ -315,7 +315,9 @@ out:
 /**
  * @brief Log a compile error, naming the unknown name if there is one.
  *
- * tinyexpr reports the position after the token that failed.
+ * tinyexpr reports the position after the token that failed, which is
+ * the 1-based position of its last character.  Unknown names are reported
+ * with the 1-based position of their first character.
  *
  * @param e           Eval.
  * @param v           Value.
@@ -353,7 +355,7 @@ static void compile_error(EVAL_T *e, EVAL_VAL_T *v, const te_variable *vars, int
         }
       }
       if (idx == vars_count) {
-        syslog(LOG_ERR, "eval '%s': value '%s': unknown name '%s' at position %d of expression \"%s\".", e->name, v->name, name, err, s);
+        syslog(LOG_ERR, "eval '%s': value '%s': unknown name '%s' at position %d of expression \"%s\".", e->name, v->name, name, start + 1, s);
         free(name);
         return;
       }
