@@ -473,8 +473,9 @@ Value names of an eval must start with a letter, followed by letters, digits and
 **Validity.**  Validity is decided per value, so a dead input only stops the values that depend on it:
 
 - An outside value is invalid if it was never received or is older than `max_age` (unless `max_age = 0`).
-- A value is skipped (not evaluated and not published) if an outside value it reads is invalid, or a value further up that it reads was not updated in this evaluation, or if its result is not finite (NaN, inf).
-- A skipped value keeps its previous state for values reading it as previous state.  It is not published, so it becomes stale for its consumers, and values depending on it (in this and other evals) are skipped too.
+- A value is skipped (not evaluated and not published) if an outside value it depends on is invalid, if a value further up that it reads was not updated in this evaluation, or if its result is not finite (NaN, inf).  A value depends on the outside values it reads and on those of the other values of the eval it reads, further up or further down, also indirectly.  So a value reading the previous state of a value further down is skipped together with it when their inputs are stale.
+- A skipped value keeps its previous state (for itself and values further up that read it).  It is not published, so it becomes stale for its consumers.  In other evals, values reading it are skipped once it is older than their `max_age`.
+- A value reading a value further down gets its result of the previous evaluation, i.e. one evaluation late: in the first evaluation after startup or after a gap it gets `init` or the state from before the gap, and after a non-finite result of that value its last finite one.
 
 A derived value is therefore never published from stale inputs.  The default `max_age` (10 minutes, as the default `stale_timeout` of the MQTT logger) suits sensors that publish rarely; control logic should set a tighter limit.  `max_age = 0` uses the last known value of an input, however old.  Stale inputs and non-finite results are logged once per state change; an input never received is reported after `max_age` (10 minutes with `max_age = 0`).
 

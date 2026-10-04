@@ -222,7 +222,20 @@ record per value:
   result of this evaluation, so their validity propagates, 4.4).
 
 Own values read from the same or a later position are previous state and
-are not dependencies.  The outside values read by any value of the eval
+are not dependencies in this sense.
+
+**Input closure.**  The outside values a value depends on are the ones it
+reads directly plus those of all other own values it reads (above or
+below), transitively; computed once after the walk (fixed point over the
+`refs` lists).  The validity check (4.4) uses this closure.  Without it,
+a value reading the previous state of a value further down would keep
+publishing results from that value's last state after its inputs went
+stale (found in review: `back = later * 2` with `later = y` kept
+publishing after `y` stopped).  The tempting alternative rule "skip if
+the value below was skipped last time" deadlocks with feedback between
+values (a reads b below, b reads a above: once a is skipped, b is
+skipped because a was not updated, and a stays skipped because b was).
+The static closure cannot block recovery.  The outside values read by any value of the eval
 are the ones refreshed before an evaluation and used as default triggers.
 Constants are folded at compile time (`optimize()` replaces pure function
 nodes with only constant parameters); variable nodes are never folded,
@@ -285,24 +298,28 @@ looking outputs.
    (`uvrgw_conf_get_val()`) and mark each as valid or invalid: invalid if
    never received, or older than `max_age` (if not 0).
 2. Evaluate the `value` sections in order.  For each value:
-   - If one of its outside values is invalid, or one of its own-value
-     dependencies (above it) was not updated in this evaluation: the
-     value is **skipped**.
+   - If one of the outside values in its input closure (4.2) is invalid,
+     or one of its own-value dependencies (above it) was not updated in
+     this evaluation: the value is **skipped**.
    - Otherwise set `dt` (4.5) and evaluate (`te_eval()`).  If the result
      is not finite (NaN/inf), the value is **skipped**.
    - Otherwise store the result in the slot of the value; it is
      **updated**.
-   - A skipped value keeps its previous state in its slot (values further
-     down that read it as previous state still see a number) and is not
-     published.
+   - A skipped value keeps its previous state in its slot and is not
+     published.  Values further up that read it as previous state get
+     that state only if their own input closure is valid; this happens
+     after a non-finite result (they see the last finite one) and in the
+     first evaluation after a gap (one evaluation late, by definition of
+     reading a value further down).
 3. Publish the updated non-local values.
 
 Only the final result of a value is checked, not intermediate results:
 `if(x != 0, a / x, 0)` is a working guard although `if()` evaluates both
 arguments and `a / x` is inf for `x = 0`.
 
-A skipped value is not published, so it becomes stale for its consumers,
-and its dependents in the same eval and in other evals are skipped too.
+A skipped value is not published, so it becomes stale for its consumers.
+Its dependents in the same eval are skipped in the same evaluation; in
+other evals once it is older than their `max_age`.
 
 Logging, once per state change per value: "eval '<e>': value '<v>' not
 evaluated: input '<x>' is stale" / "... result is not finite" / "... '<u>'

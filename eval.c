@@ -6,7 +6,11 @@
  * the sections and creates the dispatchers of all non-local values (so
  * evals can read values of evals defined later), the second one compiles
  * the expressions and records the dependencies of each value by walking
- * the compiled expression trees.
+ * the compiled expression trees.  The outside values a value depends on
+ * include those of the other values of the eval it reads (closure), so a
+ * value reading the previous state of a value further down is skipped
+ * when that value's inputs are stale.  Computed once at config load, so
+ * feedback between values (a reads b, b reads a) cannot block recovery.
  *
  * tinyexpr binds each name to the address of a double.  Each eval has an
  * array of these "slots": @c dt, one per own value and one per dispatcher
@@ -74,6 +78,7 @@ static int compile_eval(EVAL_T *e);
 static void compile_error(EVAL_T *e, EVAL_VAL_T *v, const te_variable *vars, int vars_count, int err);
 static int walk(DEP_CTX_T *ctx, const te_expr *n);
 static int add_index(int **list, int *count, int idx);
+static int close_inputs(EVAL_T *e);
 static int setup_triggers(EVAL_T *e, cfg_t *cfg);
 static int check_cycles(void);
 static int visit(EVAL_T *e, EVAL_T **path, int depth);
@@ -293,6 +298,11 @@ static int compile_eval(EVAL_T *e) {
     }
   }
 
+  if (close_inputs(e) < 0) {
+    syslog(LOG_ERR, "eval '%s': failed to allocate dependencies.", e->name);
+    goto out;
+  }
+
   ret = 0;
 
 out:
@@ -376,13 +386,17 @@ static int walk(DEP_CTX_T *ctx, const te_expr *n) {
       return 0;
     }
 
-    // own value
+    // own value: above carries the result of this evaluation, below
+    // (and the value itself) the previous state
     if (slot <= e->values_count) {
       own = slot - 1;
-      if (own < ctx->v - e->values) {
-        return add_index(&ctx->v->deps, &ctx->v->deps_count, own);
+      if (own == ctx->v - e->values) {
+        return 0;
       }
-      return 0;
+      if (own < ctx->v - e->values && add_index(&ctx->v->deps, &ctx->v->deps_count, own) < 0) {
+        return -1;
+      }
+      return add_index(&ctx->v->refs, &ctx->v->refs_count, own);
     }
 
     // outside value
@@ -433,6 +447,37 @@ static int add_index(int **list, int *count, int idx) {
   p[*count] = idx;
   *list = p;
   (*count)++;
+
+  return 0;
+}
+
+/**
+ * @brief Add the outside values of the own values read to each value
+ *        (transitive closure over @c refs).
+ *
+ * @param e  Eval.
+ * @return   0 on success, -1 on allocation failure.
+ */
+static int close_inputs(EVAL_T *e) {
+  EVAL_VAL_T *v, *r;
+  int val_idx, i, j, count;
+  bool changed;
+
+  do {
+    changed = false;
+    for (v = e->values, val_idx = 0; val_idx < e->values_count; v++, val_idx++) {
+      for (i = 0; i < v->refs_count; i++) {
+        r = &e->values[v->refs[i]];
+        for (j = 0; j < r->ins_count; j++) {
+          count = v->ins_count;
+          if (add_index(&v->ins, &v->ins_count, r->ins[j]) < 0) {
+            return -1;
+          }
+          changed |= (v->ins_count != count);
+        }
+      }
+    }
+  } while (changed);
 
   return 0;
 }
@@ -721,6 +766,7 @@ void eval_unconfigure(void) {
       te_free(v->expr);
       free(v->ins);
       free(v->deps);
+      free(v->refs);
     }
     free(e->values);
     free(e->ins);

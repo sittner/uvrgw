@@ -11,9 +11,12 @@
  * All names are bound at config load: unknown names are config errors,
  * and the values each expression reads are known.  Validity is decided
  * per value: a value is not evaluated (and not published) if an outside
- * value it reads is missing or older than @c max_age, if a value of the
- * same eval defined above it that it reads was not updated in this
- * evaluation, or if its result is not finite.
+ * value it depends on is missing or older than @c max_age, if a value of
+ * the same eval defined above it that it reads was not updated in this
+ * evaluation, or if its result is not finite.  A value depends on the
+ * outside values it reads and on those of the other values of the eval it
+ * reads (above or below, transitively), so reading the previous state of
+ * a value further down does not pass on stale inputs.
  *
  * Non-local values are published via the dispatcher; local values are
  * private to the eval.  State (values read by themselves, @c dt) is kept
@@ -46,10 +49,12 @@ typedef struct EVAL_VAL {
   int slot;                  /**< Index of the value in @c eval->slots. */
   UVRGW_CONF_VAL_DISPATCH_T *disp; /**< Dispatcher (NULL for local values). */
 
-  int ins_count;             /**< Number of outside values read. */
-  int *ins;                  /**< Indices into @c eval->ins of the outside values read. */
+  int ins_count;             /**< Number of outside values depended on. */
+  int *ins;                  /**< Indices into @c eval->ins of the outside values read, directly or via own values (closure). */
   int deps_count;            /**< Number of own values above this one read. */
   int *deps;                 /**< Indices into @c eval->values of the own values above read. */
+  int refs_count;            /**< Number of other own values read (above or below). */
+  int *refs;                 /**< Indices into @c eval->values of the other own values read. */
 
   bool updated;              /**< Updated in the current evaluation. */
   bool has_last;             /**< Updated in the previous evaluation (@c last_ts valid). */
