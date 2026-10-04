@@ -521,6 +521,7 @@ void uvrgw_conf_cleanup(void) {
     next = dp->next;
     pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
+    free(dp->producer);
     free(dp->value_cbs);
     free(dp);
     dp = next;
@@ -629,6 +630,34 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
   }
 
   return dp;
+}
+
+/**
+ * @brief Register the producer of a value (see header).
+ *
+ * @param dp        Dispatcher.
+ * @param module    Module/section type.
+ * @param instance  Section identification.
+ * @return          0 on success, -1 on duplicate producer or OOM.
+ */
+int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance) {
+  char *owner;
+
+  owner = malloc(strlen(module) + strlen(instance) + 4);
+  if (owner == NULL) {
+    syslog(LOG_ERR, "Failed to allocate producer of value '%s'.", dp->name);
+    return -1;
+  }
+  sprintf(owner, "%s '%s'", module, instance);
+
+  if (dp->producer != NULL) {
+    syslog(LOG_ERR, "value '%s' of %s is already produced by %s.", dp->name, owner, dp->producer);
+    free(owner);
+    return -1;
+  }
+
+  dp->producer = owner;
+  return 0;
 }
 
 static void init_dispatcher(void) {

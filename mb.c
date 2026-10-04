@@ -304,7 +304,9 @@ static MB_SLAVE_VAL_T *find_block_value(MB_BLOCK_T *blk, const char *name) {
 
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) child;
+  MB_MASTER_T *master;
   bool bit_block;
+  int ret;
 
   val->block = (MB_BLOCK_T *) ctx;
 
@@ -363,6 +365,18 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->block->dir == UVRGW_CONF_VAL_DIR_OUT));
   if (val->disp == NULL) {
     return -1;
+  }
+
+  if (val->block->dir == UVRGW_CONF_VAL_DIR_IN) {
+    master = val->block->slave->master;
+    if (master->tcp) {
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip);
+    } else {
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface);
+    }
+    if (ret < 0) {
+      return -1;
+    }
   }
 
   return 0;

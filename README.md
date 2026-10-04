@@ -81,7 +81,7 @@ If no config file is given the default path `/etc/uvrgw.conf` is used.
 
 The configuration file uses [libconfuse](https://github.com/libconfuse/libconfuse) syntax.  Top-level sections are `mqtt {}`, `json {}`, `can {}`, `modbus_rtu {}` and `modbus_tcp {}`.
 
-Values across different protocol sections are linked by **name**: giving two values the same name in any combination of sections causes the value dispatcher to forward every received value to all registered outputs with that name.
+Values across different protocol sections are linked by **name**: giving two values the same name in any combination of sections causes the value dispatcher to forward every received value to all registered outputs with that name.  Each name may be published by only one input, counter or eval; a second one is a configuration error naming both (e.g. `value 'x' of eval 'a' is already produced by modbus_tcp '192.168.1.10'`).
 
 ### MQTT
 

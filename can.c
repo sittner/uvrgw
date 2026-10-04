@@ -286,6 +286,10 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (val->frame->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "can", val->frame->iface->interface) < 0) {
+    return -1;
+  }
+
   return 0;
 }
 
