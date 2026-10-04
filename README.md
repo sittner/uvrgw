@@ -611,4 +611,4 @@ Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the
 
 No license is currently specified in this repository.
 
-The bundled [tinyexpr](https://github.com/codeplea/tinyexpr) (`tinyexpr/`, used by `eval`) is licensed under the zlib license, see `tinyexpr/LICENSE`.
+The bundled [tinyexpr](https://github.com/codeplea/tinyexpr) (`tinyexpr/`, used by `eval`, slightly modified as described in `tinyexpr/README.uvrgw`) is licensed under the zlib license, see `tinyexpr/LICENSE`.

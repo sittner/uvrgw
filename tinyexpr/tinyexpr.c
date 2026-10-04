@@ -23,6 +23,11 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+/*
+ * Modified for uvrgw: adds te_is_builtin() (changes marked "uvrgw:"),
+ * see README.uvrgw.  Otherwise unchanged from tinyexpr v1.1.1.
+ */
+
 /* COMPILE TIME OPTIONS */
 
 /* Exponentiation associativity:
@@ -217,6 +222,11 @@ static const te_variable *find_builtin(const char *name, int len) {
     }
 
     return 0;
+}
+
+/* uvrgw: added. */
+int te_is_builtin(const char *name) {
+    return find_builtin(name, (int) strlen(name)) != 0;
 }
 
 static const te_variable *find_lookup(const state *s, const char *name, int len) {

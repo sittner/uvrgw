@@ -39,19 +39,6 @@ static pthread_t thread;
 static bool thread_running;
 static int64_t start_ticks;
 
-/**
- * @brief Names of the tinyexpr built-in functions (@c functions[] of
- *        tinyexpr.c v1.1.1).
- *
- * A variable with one of these names would replace the function in every
- * expression, so they are not allowed as value names.
- */
-static const char *const builtin_names[] = {
-  "abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "cosh", "e", "exp",
-  "fac", "floor", "ln", "log", "log10", "ncr", "npr", "pi", "pow", "sin",
-  "sinh", "sqrt", "tan", "tanh", NULL
-};
-
 static double fn_if(double c, double a, double b);
 static double fn_min(double a, double b);
 static double fn_max(double a, double b);
@@ -93,7 +80,7 @@ static int visit(EVAL_T *e, EVAL_T **path, int depth);
 static bool triggered_by(EVAL_T *b, EVAL_T *a);
 static EVAL_T *eval_of(UVRGW_CONF_VAL_DISPATCH_T *dp);
 static bool valid_name(const char *name);
-static bool is_function(const char *name, int len);
+static bool is_function(const char *name);
 static EVAL_VAL_T *find_value(EVAL_T *e, const char *name);
 static UVRGW_CONF_VAL_DISPATCH_T *find_dispatcher(const char *name);
 static int trigger_update(void *v, double f);
@@ -197,7 +184,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (strcmp(v->name, "dt") == 0 || is_function(v->name, strlen(v->name))) {
+  if (strcmp(v->name, "dt") == 0 || is_function(v->name)) {
     syslog(LOG_ERR, "eval '%s': value name '%s' is reserved (dt or expression function).", e->name, v->name);
     return -1;
   }
@@ -276,7 +263,7 @@ static int compile_eval(EVAL_T *e) {
   for (dp = uvrgw_conf_get_dispatchers(), idx = 0; dp != NULL; dp = dp->next, idx++) {
     cands[idx] = dp;
     cand_ins[idx] = -1;
-    if (!valid_name(dp->name) || strcmp(dp->name, "dt") == 0 || is_function(dp->name, strlen(dp->name)) || find_value(e, dp->name) != NULL) {
+    if (!valid_name(dp->name) || strcmp(dp->name, "dt") == 0 || is_function(dp->name) || find_value(e, dp->name) != NULL) {
       continue;
     }
     vars[vars_count].name = dp->name;
@@ -328,7 +315,8 @@ out:
  */
 static void compile_error(EVAL_T *e, EVAL_VAL_T *v, const te_variable *vars, int vars_count, int err) {
   const char *s = v->expr_str;
-  int start, len, idx;
+  char *name;
+  int start, idx;
 
   if (err < 0) {
     syslog(LOG_ERR, "eval '%s': value '%s': failed to compile expression.", e->name, v->name);
@@ -345,18 +333,22 @@ static void compile_error(EVAL_T *e, EVAL_VAL_T *v, const te_variable *vars, int
   while (start < err && s[start] >= '0' && s[start] <= '9') {
     start++;
   }
-  len = err - start;
 
-  if (len > 0 && !(start > 0 && s[start - 1] == '.') && !is_function(s + start, len)) {
-    for (idx = 0; idx < vars_count; idx++) {
-      if (strncmp(vars[idx].name, s + start, len) == 0 && vars[idx].name[len] == 0) {
-        break;
+  if (start < err && !(start > 0 && s[start - 1] == '.')) {
+    name = strndup(s + start, err - start);
+    if (name != NULL && !is_function(name)) {
+      for (idx = 0; idx < vars_count; idx++) {
+        if (strcmp(vars[idx].name, name) == 0) {
+          break;
+        }
+      }
+      if (idx == vars_count) {
+        syslog(LOG_ERR, "eval '%s': value '%s': unknown name '%s' at position %d of expression \"%s\".", e->name, v->name, name, err, s);
+        free(name);
+        return;
       }
     }
-    if (idx == vars_count) {
-      syslog(LOG_ERR, "eval '%s': value '%s': unknown name '%.*s' at position %d of expression \"%s\".", e->name, v->name, len, s + start, err, s);
-      return;
-    }
+    free(name);
   }
 
   syslog(LOG_ERR, "eval '%s': value '%s': syntax error at position %d of expression \"%s\".", e->name, v->name, err, s);
@@ -659,20 +651,21 @@ static bool valid_name(const char *name) {
  * @brief Check whether a name is an expression function (tinyexpr
  *        built-in or uvrgw).
  *
- * @param name  Name (not necessarily terminated).
- * @param len   Length of the name.
+ * A variable with such a name would replace the function in every
+ * expression (tinyexpr looks up variables first).
+ *
+ * @param name  Name.
  */
-static bool is_function(const char *name, int len) {
+static bool is_function(const char *name) {
   int idx;
 
-  for (idx = 0; builtin_names[idx] != NULL; idx++) {
-    if (strncmp(builtin_names[idx], name, len) == 0 && builtin_names[idx][len] == 0) {
-      return true;
-    }
+  // te_is_builtin() is added to tinyexpr by uvrgw (see tinyexpr/README.uvrgw)
+  if (te_is_builtin(name)) {
+    return true;
   }
 
   for (idx = 0; idx < FUNCTIONS_COUNT; idx++) {
-    if (strncmp(functions[idx].name, name, len) == 0 && functions[idx].name[len] == 0) {
+    if (strcmp(functions[idx].name, name) == 0) {
       return true;
     }
   }

@@ -1,0 +1,52 @@
+--- a/tinyexpr.c
++++ b/tinyexpr.c
+@@ -23,6 +23,11 @@
+  * 3. This notice may not be removed or altered from any source distribution.
+  */
+ 
++/*
++ * Modified for uvrgw: adds te_is_builtin() (changes marked "uvrgw:"),
++ * see README.uvrgw.  Otherwise unchanged from tinyexpr v1.1.1.
++ */
++
+ /* COMPILE TIME OPTIONS */
+ 
+ /* Exponentiation associativity:
+@@ -219,6 +224,11 @@
+     return 0;
+ }
+ 
++/* uvrgw: added. */
++int te_is_builtin(const char *name) {
++    return find_builtin(name, (int) strlen(name)) != 0;
++}
++
+ static const te_variable *find_lookup(const state *s, const char *name, int len) {
+     int iters;
+     const te_variable *var;
+--- a/tinyexpr.h
++++ b/tinyexpr.h
+@@ -23,6 +23,11 @@
+  * 3. This notice may not be removed or altered from any source distribution.
+  */
+ 
++/*
++ * Modified for uvrgw: adds te_is_builtin() (changes marked "uvrgw:"),
++ * see README.uvrgw.  Otherwise unchanged from tinyexpr v1.1.1.
++ */
++
+ #ifndef TINYEXPR_H
+ #define TINYEXPR_H
+ 
+@@ -83,6 +88,11 @@
+ /* This is safe to call on NULL pointers. */
+ void te_free(te_expr *n);
+ 
++/* uvrgw: added. */
++/* Returns 1 if name is a built-in function or constant, 0 otherwise. */
++/* A variable with such a name hides the built-in in te_compile(). */
++int te_is_builtin(const char *name);
++
+ 
+ #ifdef __cplusplus
+ }

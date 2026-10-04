@@ -15,6 +15,8 @@ guide:
   eval and input ("input 'x' is stale" / "never received" / "valid
   again"), per value only non-finite results.  Values skipped because of
   an input or a skipped dependency are not logged individually.
+- tinyexpr is not copied unmodified: it gets `te_is_builtin()` (4.8)
+  instead of a copied list of built-in names in `eval.c`.
 - Producer owners are named by module and section: `modbus_tcp '<ip>'`,
   `modbus_rtu '<interface>'`, `can '<interface>'`, `mqtt '<host>'`,
   `json '<url>'`, `counter '<name>'`, `eval '<name>'`.
@@ -185,10 +187,9 @@ Therefore:
 - Outside values whose name is not an identifier, is `dt`, or equals the
   name of an expression function are not put into the variable list.
   They cannot be used in expressions; using one gives an unknown name
-  error or calls the function.  Keep the list of tinyexpr built-in names
-  in `eval.c` (from the `functions[]` table of `tinyexpr.c` v1.1.1: `abs
-  acos asin atan atan2 ceil cos cosh e exp fac floor ln log log10 ncr npr
-  pi pow sin sinh sqrt tan tanh`).
+  error or calls the function.  The built-in names are only defined in
+  the `functions[]` table of `tinyexpr.c`; `eval.c` asks tinyexpr with
+  `te_is_builtin()`, added to tinyexpr by uvrgw (4.8).
 
 Unknown names are compile errors, so typos are found at config load.
 "Known" means a dispatcher exists, i.e. any module references the name.
@@ -381,13 +382,18 @@ are added when the first use case needs them.
 - tinyexpr v1.1.1 is copied into the repository (no submodule):
   `tinyexpr/tinyexpr.c`, `tinyexpr/tinyexpr.h`, `tinyexpr/LICENSE`, plus
   `tinyexpr/README.uvrgw` naming the upstream URL, the release tag and
-  commit (`6d2233ce14dca063994708a91b3b98e24e8aa0c3`), and stating that the files
-  are unmodified.  Do not copy the examples and tests (they have their
+  commit (`6d2233ce14dca063994708a91b3b98e24e8aa0c3`) and the uvrgw
+  modification.  Do not copy the examples and tests (they have their
   own `main()`).  v1.1.1 contains the comparison and logic operators;
   `master` differs from it only in copyright headers.
+- The only modification is `te_is_builtin()` in `tinyexpr.c/h`
+  (`tinyexpr/uvrgw.patch`, marked "uvrgw:" in the source, as the zlib
+  licence requires for altered versions).  tinyexpr has no public way to
+  list its built-ins (`functions[]` is static), and a copied list in
+  `eval.c` would silently go stale on a tinyexpr update; with the patch
+  forgotten, linking fails instead.
 - The compile options are set in the `Makefile`, not by editing
-  `tinyexpr.c` (the files stay unmodified): `-DTE_POW_FROM_RIGHT` for
-  `tinyexpr/tinyexpr.o` only.
+  `tinyexpr.c`: `-DTE_POW_FROM_RIGHT` for `tinyexpr/tinyexpr.o` only.
 - `Makefile`: add `tinyexpr/tinyexpr.c` to the sources and
   `-Itinyexpr` to the include path, both in variables that are not
   overridden by `CFLAGS` given on the command line (the test build passes

@@ -23,6 +23,11 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+/*
+ * Modified for uvrgw: adds te_is_builtin() (changes marked "uvrgw:"),
+ * see README.uvrgw.  Otherwise unchanged from tinyexpr v1.1.1.
+ */
+
 #ifndef TINYEXPR_H
 #define TINYEXPR_H
 
@@ -82,6 +87,11 @@ void te_print(const te_expr *n);
 /* Frees the expression. */
 /* This is safe to call on NULL pointers. */
 void te_free(te_expr *n);
+
+/* uvrgw: added. */
+/* Returns 1 if name is a built-in function or constant, 0 otherwise. */
+/* A variable with such a name hides the built-in in te_compile(). */
+int te_is_builtin(const char *name);
 
 
 #ifdef __cplusplus
