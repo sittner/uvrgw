@@ -218,6 +218,15 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
 int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance);
 
 /**
+ * @brief Get the head of the dispatcher list.
+ *
+ * Valid after configuration until uvrgw_conf_cleanup(); follow @c next.
+ *
+ * @return  First dispatcher, or NULL if there is none.
+ */
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatchers(void);
+
+/**
  * @brief Register a send callback on a dispatcher.
  *
  * Must be called after uvrgw_conf_load() has allocated the callback arrays

@@ -14,6 +14,7 @@ SRC = \
 	ntp_check.c \
 	sunspec.c \
 	counter.c \
+	eval.c \
 	tinyexpr/tinyexpr.c \
 
 OBJ = $(SRC:.c=.o)

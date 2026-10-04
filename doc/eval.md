@@ -1,7 +1,27 @@
 # Implementation guide: calculated values and control logic (`eval`)
 
-Status: design only, nothing implemented.  Written as a self-contained
-brief for the implementation session.
+Status: implemented (`eval.c/h`, README section "Calculated values and
+control logic").  Decisions taken during implementation, beyond this
+guide:
+
+- A local value whose name is used outside of the eval (by any module)
+  is a config error; it would hide that value in the eval.
+- An eval without `period` and `triggers` that reads no outside value
+  would only be evaluated at startup: config error.  A trigger given
+  twice is a config error.
+- `if`, `min`, `max`, `clamp` and `hyst` return NaN if an argument is
+  NaN (e.g. `sqrt(-1)`), so the value is skipped instead of hiding it.
+- Logging (4.4): stale and never received inputs are logged once per
+  eval and input ("input 'x' is stale" / "never received" / "valid
+  again"), per value only non-finite results.  Values skipped because of
+  an input or a skipped dependency are not logged individually.
+- Producer owners are named by module and section: `modbus_tcp '<ip>'`,
+  `modbus_rtu '<interface>'`, `can '<interface>'`, `mqtt '<host>'`,
+  `json '<url>'`, `counter '<name>'`, `eval '<name>'`.
+- Two periodic evals whose values depend on each other directly (a value
+  of A reads a value of B that reads a value of A) never start, since
+  each waits for the other's first result.  Only periodic evals where at
+  least one side does not depend on the other run.
 
 ## 1. Goal
 
