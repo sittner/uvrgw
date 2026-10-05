@@ -124,7 +124,8 @@ struct UVRGW_CONF_VAL_DISPATCH;
  * @c val differs from the source are invoked.
  *
  * At most one module may publish (produce) a name; it registers itself
- * with uvrgw_conf_set_producer() during configuration.
+ * with uvrgw_conf_set_producer() during configuration.  Every name must
+ * have a producer, checked after all modules are configured.
  *
  * The dispatcher also keeps the last dispatched value and its validity,
  * so consumers can read the current value on demand (see
@@ -151,6 +152,8 @@ typedef struct UVRGW_CONF_VAL_DISPATCH {
   struct UVRGW_CONF_DISPATCH_CB_VAL *value_cbs; /**< Array of @c value_count callback entries. */
 
   void *producer_val;                     /**< Producer's value pointer (source identifier for its dispatches); NULL if none. */
+  bool producer_input;                    /**< Producer is an input (has init_value and stale_timeout options). */
+  char *timeout_reader;                   /**< First reader requiring a stale_timeout of an input producer; NULL if none. */
   double init_value;                      /**< Start value of the producer. */
   int stale_timeout;                      /**< Max. time (ms) without data before reset to @c init_value; 0 = never. */
 
@@ -237,6 +240,8 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
  * @param instance       Section identification (e.g. IP address, counter name).
  * @param val            Producer's value pointer, the source identifier it
  *                       passes to uvrgw_conf_disp_val().
+ * @param input          True for input values (MQTT, JSON, CAN, Modbus),
+ *                       false for computed values (counter, eval).
  * @param init_value     Value before the first data and after a timeout.
  * @param stale_timeout  Max. time (ms) without data before the value is
  *                       reset to @p init_value; 0 = never.
@@ -244,7 +249,23 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
  *                       or @p init_value / @p stale_timeout is invalid.
  */
 int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance,
-                            void *val, double init_value, int stale_timeout);
+                            void *val, bool input, double init_value, int stale_timeout);
+
+/**
+ * @brief Register a reader that needs a value without stale data.
+ *
+ * Called during configuration by modules that would publish a frozen
+ * value (MQTT logger, SunSpec meter) or integrate it forever (counter
+ * with @c integrate_power).  After all modules are configured, a name
+ * whose producer is an input without @c stale_timeout is then a
+ * configuration error.  Computed producers are not checked.
+ *
+ * @param dp        Dispatcher of the read name.
+ * @param module    Reader's module/section type (e.g. "mqtt logger").
+ * @param instance  Reader's section identification (e.g. logger name).
+ * @return          0 on success, -1 on OOM.
+ */
+int uvrgw_conf_need_timeout(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance);
 
 /**
  * @brief Get the head of the dispatcher list.

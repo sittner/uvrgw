@@ -133,7 +133,12 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (uvrgw_conf_set_producer(c->disp, "counter", c->name, c, 0.0, 0) < 0) {
+  if (uvrgw_conf_set_producer(c->disp, "counter", c->name, c, false, 0.0, 0) < 0) {
+    return -1;
+  }
+
+  // the last power is integrated until a reset
+  if (c->integrate_power && uvrgw_conf_need_timeout(c->src_disp, "counter", c->name) < 0) {
     return -1;
   }
 

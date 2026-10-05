@@ -387,9 +387,9 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   if (val->block->dir == UVRGW_CONF_VAL_DIR_IN) {
     master = val->block->slave->master;
     if (master->tcp) {
-      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip, val, init_value, stale_timeout);
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip, val, true, init_value, stale_timeout);
     } else {
-      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface, val, init_value, stale_timeout);
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface, val, true, init_value, stale_timeout);
     }
     if (ret < 0) {
       return -1;
