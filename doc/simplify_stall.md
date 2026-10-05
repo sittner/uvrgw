@@ -436,9 +436,7 @@ Rejected alternatives (so they are not discussed again):
   no `stale_timeout`.**  It was meant to keep a forgotten timeout from
   going unnoticed, but in a real config nearly every input is logged, so
   it would demand a timeout almost everywhere, although only power
-  sources need one.  It was implemented in step 7 (registrations in
-  `mqtt_logger.c` for every logged value and in `sunspec.c` for every
-  meter source) and is narrowed to the SunSpec power sources in step 8.
+  sources need one.
 - **Timeouts on counters and eval values.** Nobody expects a timeout
   anywhere but at an input, and validity already propagates: a reset is a
   dispatch, so it triggers the evals that read the value.
