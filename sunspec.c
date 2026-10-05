@@ -388,9 +388,13 @@ static void accept_client(SUNSPEC_SERVER_T *server) {
 
   fd = accept(server->listen_fd, NULL, NULL);
   if (fd < 0) {
-    syslog(LOG_WARNING, "sunspec server accept failed (error %d)", errno);
+    if (!server->accept_failed) {
+      syslog(LOG_WARNING, "sunspec server accept failed (error %d)", errno);
+      server->accept_failed = true;
+    }
     return;
   }
+  server->accept_failed = false;
 
   setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
   setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));

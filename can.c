@@ -52,6 +52,7 @@ static int iface_startup(CAN_IFACE_T *iface);
 static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface);
 static void *iface_thread(void *ptr);
 static int iface_task(CAN_IFACE_T *iface);
+static int iface_write(CAN_IFACE_T *iface, const struct can_frame *frame);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
 static int send_value(void *v, double f, bool valid);
@@ -502,7 +503,6 @@ static int iface_task(CAN_IFACE_T *iface) {
   int64_t now;
   CAN_FRAME_T *frame;
   int frame_idx;
-  ssize_t count;
 
   now = utl_get_ticks();
 
@@ -529,14 +529,41 @@ static int iface_task(CAN_IFACE_T *iface) {
 
     frame->send_time = 0;
 
-    count = write(iface->can_fd, &(frame->send_buf), sizeof(struct can_frame));
-    if (count != sizeof(struct can_frame)) {
+    if (iface_write(iface, &(frame->send_buf)) < 0) {
       pthread_mutex_unlock(&frame->send_buf_mutex);
-      syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
       return -1;
     }
 
     pthread_mutex_unlock(&frame->send_buf_mutex);
+  }
+
+  return 0;
+}
+
+/**
+ * @brief Write a frame to the CAN socket (TX thread only).
+ *
+ * A failure is logged once until a write succeeds again.
+ *
+ * @param iface  Interface.
+ * @param frame  Frame to send.
+ * @return       0 on success, -1 on socket write error.
+ */
+static int iface_write(CAN_IFACE_T *iface, const struct can_frame *frame) {
+  ssize_t count;
+
+  count = write(iface->can_fd, frame, sizeof(struct can_frame));
+  if (count != sizeof(struct can_frame)) {
+    if (!iface->write_failed) {
+      syslog(LOG_ERR, "Failed to write to CAN interface '%s': %s", iface->interface, strerror(errno));
+      iface->write_failed = true;
+    }
+    return -1;
+  }
+
+  if (iface->write_failed) {
+    syslog(LOG_INFO, "CAN interface '%s' written again.", iface->interface);
+    iface->write_failed = false;
   }
 
   return 0;
@@ -662,12 +689,18 @@ static int send_timestamp(CAN_IFACE_T *iface) {
   uint32_t msecs;
   uint16_t days;
   struct can_frame frame;
-  ssize_t count;
 
   // check for valid NTP time
   if (!ntp_check()) {
-    syslog(LOG_WARNING, "NTP daemon not synced, will not send timeframe.");
+    if (!iface->unsynced) {
+      syslog(LOG_WARNING, "NTP daemon not synced, CAN timestamps on '%s' are not sent.", iface->interface);
+      iface->unsynced = true;
+    }
     return 0;
+  }
+  if (iface->unsynced) {
+    syslog(LOG_INFO, "NTP daemon synced, CAN timestamps on '%s' are sent again.", iface->interface);
+    iface->unsynced = false;
   }
 
   // get UTC time
@@ -705,9 +738,7 @@ static int send_timestamp(CAN_IFACE_T *iface) {
   frame.data[5] = (days >> 8) & 0xff;
 
   // send frame
-  count = write(iface->can_fd, &frame, sizeof(struct can_frame));
-  if (count != sizeof(struct can_frame)) {
-    syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+  if (iface_write(iface, &frame) < 0) {
     return -1;
   }
 

@@ -79,6 +79,8 @@ typedef struct CAN_IFACE {
   pthread_t thread;        /**< TX thread handle. */
   bool thread_running;     /**< Set to false to request TX thread termination. */
   int64_t next_timestamp;  /**< Monotonic time (ms) for next NTP timestamp transmission. */
+  bool write_failed;       /**< Last write to the socket failed (for state logging, TX thread only). */
+  bool unsynced;           /**< NTP was not synced at the last timestamp (for state logging). */
 } CAN_IFACE_T;
 
 /**

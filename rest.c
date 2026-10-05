@@ -405,6 +405,9 @@ static json_object *rest_get_json(REST_CONN_T *conn) {
         conn->url, err, curl_easy_strerror(err));
       conn->get_failed = true;
     }
+    // no data, also if the JSON object was already complete
+    json_object_put(state.json);
+    state.json = NULL;
     goto fail2;
   }
 

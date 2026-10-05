@@ -58,12 +58,16 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   int val_idx;
 
   if (result != 0) {
-    syslog(LOG_WARNING, "mqtt connection to %s:%d refused: %s", conn->host, conn->port, mosquitto_connack_string(result));
+    if (!conn->refused) {
+      syslog(LOG_WARNING, "mqtt connection to %s:%d refused: %s", conn->host, conn->port, mosquitto_connack_string(result));
+      conn->refused = true;
+    }
     return;
   }
 
   syslog(LOG_INFO, "mqtt connected to %s:%d", conn->host, conn->port);
   conn->connected = true;
+  conn->refused = false;
 
   if (conn->state_topic != NULL) {
     mosquitto_publish(mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("ON"), conn->qos, conn->retain);
@@ -493,7 +497,8 @@ static void conn_destroy(MQTT_CONN_T *conn) {
  * @param v      @c MQTT_VAL_T pointer.
  * @param f      Dispatched value.
  * @param valid  Validity (unused, outputs write every value).
- * @return       0 on success, -1 on publish error.
+ * @return       0 on success, -1 on publish error (logged once until a
+ *               publish succeeds again).
  */
 static int send_value(void *v, double f, bool valid) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) v;
@@ -534,10 +539,16 @@ static int send_value(void *v, double f, bool valid) {
 
   if (err != MOSQ_ERR_SUCCESS) {
     // not connected: already logged as connection state change
-    if (err != MOSQ_ERR_NO_CONN) {
+    if (err != MOSQ_ERR_NO_CONN && !val->send_failed) {
       syslog(LOG_ERR, "mqtt send of '%s' failed: %s", val->topic, mosquitto_strerror(err));
+      val->send_failed = true;
     }
     return -1;
+  }
+
+  if (val->send_failed) {
+    syslog(LOG_INFO, "mqtt send of '%s' ok again.", val->topic);
+    val->send_failed = false;
   }
 
   return 0;

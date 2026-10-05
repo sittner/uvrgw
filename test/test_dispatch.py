@@ -313,3 +313,25 @@ modbus_tcp {{
         assert dev.writes == [(10, [42])], dev.writes
         u.stop()
         assert len(u.find('Failed to write MODBUS value')) == 1, u.find('Failed to write MODBUS value')
+
+
+def test_mqtt_send_failure():
+    """A failing publish (payload too long) is logged once."""
+    with Env() as env:
+        broker = env.broker()
+        js = env.json(dict(p=1))
+        u = env.uvrgw('''json {{
+  url = "{url}"
+  interval = 200
+  value p {{ path = "p" }}
+}}
+mqtt {{
+  host = "127.0.0.1"
+  port = {mqtt}
+  value p {{ dir = out  type = number  topic = "out/p"  fmt = "%40.1f" }}
+}}
+'''.format(url=js.url, mqtt=broker.port))
+        u.wait_log("mqtt send of 'out/p' failed")
+        time.sleep(S.t(1))
+        u.stop()
+        assert len(u.find('mqtt send of')) == 1, u.find('mqtt send of')
