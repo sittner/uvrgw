@@ -262,14 +262,13 @@ static cfg_opt_t counter_opts[] = {
 static cfg_opt_t eval_val_opts[] = {
   CFG_STR("expr", NULL, CFGF_NONE),
   CFG_BOOL("local", cfg_false, CFGF_NONE),
-  CFG_FLOAT("init", 0.0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
   CFG_END()
 };
 
 static cfg_opt_t eval_opts[] = {
   CFG_INT("period", 0, CFGF_NODEFAULT),
   CFG_STR_LIST("triggers", NULL, CFGF_NONE),
-  CFG_INT("max_age", 600000, CFGF_NONE),
   CFG_SEC("value", eval_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };

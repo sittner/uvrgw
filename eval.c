@@ -8,8 +8,8 @@
  * the expressions and records the dependencies of each value by walking
  * the compiled expression trees.  The outside values a value depends on
  * include those of the other values of the eval it reads (closure), so a
- * value reading the previous state of a value further down is skipped
- * when that value's inputs are stale.  Computed once at config load, so
+ * value reading the previous state of a value further down is invalid
+ * when that value's inputs are invalid.  Computed once at config load, so
  * feedback between values (a reads b, b reads a) cannot block recovery.
  *
  * tinyexpr binds each name to the address of a double.  Each eval has an
@@ -32,7 +32,6 @@
 #include <syslog.h>
 
 #define SLOT_DT 0
-#define MISSING_REPORT_MS 600000
 
 static int evals_count;
 static EVAL_T *evals;
@@ -41,7 +40,6 @@ static pthread_mutex_t lock;
 static pthread_cond_t cond;
 static pthread_t thread;
 static bool thread_running;
-static int64_t start_ticks;
 
 static double fn_if(double c, double a, double b);
 static double fn_min(double a, double b);
@@ -142,7 +140,6 @@ static int eval_configure_one(cfg_t *cfg, void *ctx, void *child) {
   bool has_period;
 
   e->name = uvrgw_conf_strdup(cfg_title(cfg));
-  e->max_age = cfg_getint(cfg, "max_age");
 
   has_period = cfg_size(cfg, "period") > 0;
   if (has_period) {
@@ -155,11 +152,6 @@ static int eval_configure_one(cfg_t *cfg, void *ctx, void *child) {
       syslog(LOG_ERR, "eval '%s': period and triggers must not be given together.", e->name);
       return -1;
     }
-  }
-
-  if (e->max_age < 0) {
-    syslog(LOG_ERR, "eval '%s': max_age invalid.", e->name);
-    return -1;
   }
 
   if (uvrgw_conf_config_childs(cfg, "value", &e->values_count, (void **) &e->values, sizeof(EVAL_VAL_T), e, value_configure) < 0) {
@@ -182,7 +174,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   v->name = uvrgw_conf_strdup(cfg_title(cfg));
   v->expr_str = uvrgw_conf_strdup(cfg_getstr(cfg, "expr"));
   v->local = cfg_getbool(cfg, "local");
-  v->init = cfg_getfloat(cfg, "init");
+  v->init_value = cfg_getfloat(cfg, "init_value");
 
   if (!valid_name(v->name)) {
     syslog(LOG_ERR, "eval '%s': value name '%s' invalid (allowed: a letter, then letters, digits and _).", e->name, v->name);
@@ -199,8 +191,8 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (!isfinite(v->init)) {
-    syslog(LOG_ERR, "eval '%s': value '%s': init invalid.", e->name, v->name);
+  if (!isfinite(v->init_value)) {
+    syslog(LOG_ERR, "eval '%s': value '%s': init_value invalid.", e->name, v->name);
     return -1;
   }
 
@@ -209,7 +201,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     if (v->disp == NULL) {
       return -1;
     }
-    if (uvrgw_conf_set_producer(v->disp, "eval", e->name, e, v->init, 0) < 0) {
+    if (uvrgw_conf_set_producer(v->disp, "eval", e->name, e, v->init_value, 0) < 0) {
       return -1;
     }
   }
@@ -258,7 +250,7 @@ static int compile_eval(EVAL_T *e) {
 
   for (v = e->values, val_idx = 0; val_idx < e->values_count; v++, val_idx++) {
     v->slot = 1 + val_idx;
-    e->slots[v->slot] = v->init;
+    e->slots[v->slot] = v->init_value;
     vars[vars_count].name = v->name;
     vars[vars_count].address = &e->slots[v->slot];
     vars_count++;
@@ -369,9 +361,9 @@ static void compile_error(EVAL_T *e, EVAL_VAL_T *v, const te_variable *vars, int
 /**
  * @brief Walk a compiled expression and record the values it reads.
  *
- * Records the outside values read and the own values defined above the
- * value (they carry the result of the current evaluation).  Own values
- * read from the same or a later position are previous state.
+ * Records the outside values and the other own values read.  Own values
+ * defined above the value carry the result of the current evaluation,
+ * those read from the same or a later position the previous state.
  *
  * @param ctx  Walk context.
  * @param n    Expression node.
@@ -388,15 +380,11 @@ static int walk(DEP_CTX_T *ctx, const te_expr *n) {
       return 0;
     }
 
-    // own value: above carries the result of this evaluation, below
-    // (and the value itself) the previous state
+    // own value (the value itself has no outside values of its own)
     if (slot <= e->values_count) {
       own = slot - 1;
       if (own == ctx->v - e->values) {
         return 0;
-      }
-      if (own < ctx->v - e->values && add_index(&ctx->v->deps, &ctx->v->deps_count, own) < 0) {
-        return -1;
       }
       return add_index(&ctx->v->refs, &ctx->v->refs_count, own);
     }
@@ -767,7 +755,6 @@ void eval_unconfigure(void) {
       free((void *) v->expr_str);
       te_free(v->expr);
       free(v->ins);
-      free(v->deps);
       free(v->refs);
     }
     free(e->values);
@@ -787,17 +774,18 @@ void eval_unconfigure(void) {
 int eval_startup(void) {
   EVAL_T *e;
   int idx;
+  int64_t now;
 
   if (evals_count == 0) {
     return 0;
   }
 
   // evaluate all evals once at startup
-  start_ticks = utl_get_ticks();
+  now = utl_get_ticks();
   pthread_mutex_lock(&lock);
   for (e = evals, idx = 0; idx < evals_count; e++, idx++) {
     e->pending = true;
-    e->next = start_ticks;
+    e->next = now;
   }
   pthread_mutex_unlock(&lock);
 
@@ -908,7 +896,7 @@ static void *eval_thread(void *ptr) {
 }
 
 /**
- * @brief Evaluate an eval and publish the updated values.
+ * @brief Evaluate an eval and publish all values.
  *
  * @param e  Eval.
  */
@@ -917,72 +905,51 @@ static void evaluate(EVAL_T *e) {
   EVAL_VAL_T *v;
   int idx;
   int64_t now = utl_get_ticks();
-  int64_t ts;
   double r;
-  bool ok;
+  bool finite;
   int i;
 
-  // refresh outside values (logged once per eval and input)
+  // refresh outside values
   for (in = e->ins, idx = 0; idx < e->ins_count; in++, idx++) {
-    in->valid = uvrgw_conf_get_val(in->disp, &e->slots[in->slot], &ts);
-    if (!in->valid) {
-      // values are normally missing for a moment after startup
-      if (!in->logged && now - start_ticks > (e->max_age > 0 ? e->max_age : MISSING_REPORT_MS)) {
-        syslog(LOG_WARNING, "eval '%s': input '%s' never received.", e->name, in->disp->name);
-        in->logged = true;
-      }
-    } else if (e->max_age > 0 && now - ts > e->max_age) {
-      in->valid = false;
-      if (!in->logged) {
-        syslog(LOG_WARNING, "eval '%s': input '%s' is stale.", e->name, in->disp->name);
-        in->logged = true;
-      }
-    } else if (in->logged) {
-      syslog(LOG_INFO, "eval '%s': input '%s' valid again.", e->name, in->disp->name);
-      in->logged = false;
-    }
+    in->valid = uvrgw_conf_get_val(in->disp, &e->slots[in->slot], NULL);
   }
 
   for (v = e->values, idx = 0; idx < e->values_count; v++, idx++) {
-    ok = true;
-    for (i = 0; i < v->ins_count && ok; i++) {
-      ok = e->ins[v->ins[i]].valid;
-    }
-    for (i = 0; i < v->deps_count && ok; i++) {
-      ok = e->values[v->deps[i]].updated;
-    }
+    e->slots[SLOT_DT] = v->has_last ? (double) (now - v->last_ts) / 1000.0 : 0.0;
+    r = te_eval(v->expr);
 
-    v->updated = false;
-    if (ok) {
-      e->slots[SLOT_DT] = v->has_last ? (double) (now - v->last_ts) / 1000.0 : 0.0;
-      r = te_eval(v->expr);
-      if (!isfinite(r)) {
-        if (!v->not_finite) {
-          syslog(LOG_WARNING, "eval '%s': value '%s' not evaluated: result is not finite.", e->name, v->name);
-          v->not_finite = true;
-        }
-      } else {
-        // skipped values keep their previous state in the slot
-        e->slots[v->slot] = r;
-        v->updated = true;
-        if (v->not_finite) {
-          syslog(LOG_INFO, "eval '%s': value '%s' valid again.", e->name, v->name);
-          v->not_finite = false;
-        }
+    finite = isfinite(r);
+    if (!finite) {
+      // the value keeps its previous number in the slot
+      if (!v->not_finite) {
+        syslog(LOG_WARNING, "eval '%s': value '%s' invalid: result is not finite.", e->name, v->name);
+        v->not_finite = true;
+      }
+    } else {
+      e->slots[v->slot] = r;
+      if (v->not_finite) {
+        syslog(LOG_INFO, "eval '%s': value '%s' finite again.", e->name, v->name);
+        v->not_finite = false;
       }
     }
 
-    // dt restarts at 0 after a skipped evaluation
-    v->has_last = v->updated;
-    if (v->updated) {
+    // valid if all outside values read (directly or via own values) are
+    v->valid = finite;
+    for (i = 0; i < v->ins_count && v->valid; i++) {
+      v->valid = e->ins[v->ins[i]].valid;
+    }
+
+    // dt restarts at 0 after a non-finite result
+    v->has_last = finite;
+    if (finite) {
       v->last_ts = now;
     }
   }
 
-  // publish all updated values, also unchanged ones (freshness)
+  // publish all values, also unchanged ones
   for (v = e->values, idx = 0; idx < e->values_count; v++, idx++) {
-    if (v->updated && v->disp != NULL) {
-      uvrgw_conf_disp_val(v->disp, e, e->slots[v->slot], true);
+    if (v->disp != NULL) {
+      uvrgw_conf_disp_val(v->disp, e, e->slots[v->slot], v->valid);
     }
   }
 }
