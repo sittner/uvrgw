@@ -12,7 +12,7 @@ import struct
 import threading
 import time
 
-from uvrgwtest import Env, S, ana_id
+from uvrgwtest import Env, S, ana_id, wait_until
 
 VALS = '{a} value b {{ {b} stale_timeout = 0 }} value c {{ {c} stale_timeout = 1000  init_value = -2 }}'
 SECTION = 'stale_timeout = 1500\n  init_value = -1\n'
@@ -167,6 +167,45 @@ def test_modbus_rtu():
         broker = env.broker()
         dev = env.modbus_rtu()
         modbus_scenario(env, broker, dev, 'modbus_rtu {\n  interface = "%s"\n  baud = 115200\n  timeout = 200' % dev.path)
+
+
+def test_modbus_rtu_late_response():
+    """A response arriving after the timeout is not taken as the response
+    to the next request."""
+    with Env() as env:
+        broker = env.broker()
+        sub = env.mqtt(broker.port, '#')
+        dev = env.modbus_rtu()
+        dev.set(100, [111])
+        dev.set(200, [222])
+        u = env.uvrgw('''modbus_rtu {{
+  interface = "{path}"
+  baud = 115200
+  timeout = 200
+  slave {{
+    id = 1
+    interval = 300
+    block {{ dir = in  regtype = reg  addr = 100  count = 1  value a {{ reg = 0  type = u16 }} }}
+    block {{ dir = in  regtype = reg  addr = 200  count = 1  value b {{ reg = 0  type = u16 }} }}
+  }}
+}}
+mqtt {{
+  host = "127.0.0.1"
+  port = {mqtt}
+  value a {{ dir = out  type = number  topic = "out/a"  fmt = "%.0f" }}
+  value b {{ dir = out  type = number  topic = "out/b"  fmt = "%.0f" }}
+}}
+'''.format(path=dev.path, mqtt=broker.port))
+        sub.wait_value('out/a', 111)
+        sub.wait_value('out/b', 222)
+        dev.late = S.t(0.4)
+        u.wait_log('Failed to read MODBUS block')
+        u.wait_log('read again')
+        m = sub.mark()
+        wait_until(lambda: len(sub.payloads('out/a', m)) >= 3 and len(sub.payloads('out/b', m)) >= 3, 5, 'polls after the late response')
+        assert set(sub.payloads('out/a', m)) == {'111'}, sub.payloads('out/a', m)
+        assert set(sub.payloads('out/b', m)) == {'222'}, sub.payloads('out/b', m)
+        u.stop()
 
 
 def test_can():

@@ -464,10 +464,14 @@ class ModbusTcpServer(ModbusRegs):
 
 
 class ModbusRtuServer(ModbusRegs):
-    """Modbus RTU device on a pty; uvrgw opens @c path as its interface."""
+    """Modbus RTU device on a pty; uvrgw opens @c path as its interface.
+
+    @c late delays the next answer once by that many seconds.
+    """
 
     def __init__(self):
         super().__init__()
+        self.late = 0
         self.master, self.slave = pty.openpty()
         self.path = os.ttyname(self.slave)
         self.running = True
@@ -493,6 +497,8 @@ class ModbusRtuServer(ModbusRegs):
                 if self.fail:
                     continue
                 resp = frame[:1] + self.handle(frame[1:-2])
+                late, self.late = self.late, 0
+                time.sleep(late)
                 os.write(self.master, resp + crc16(resp))
 
     def close(self):

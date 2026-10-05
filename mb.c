@@ -683,6 +683,13 @@ static int master_task(MB_MASTER_T *master, int64_t now) {
     master->reconnect = false;
   }
 
+  // RTU: discard data received outside of a transaction (a response
+  // arriving after its timeout would be taken as the response to the
+  // next request, shifting all following ones)
+  if (!master->tcp) {
+    modbus_flush(master->ctx);
+  }
+
   // get current slave
   if (master->slave_curr_idx < master->slaves_count) {
     slave = &(master->slaves[master->slave_curr_idx]);
