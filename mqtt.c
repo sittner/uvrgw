@@ -34,7 +34,7 @@ static MQTT_CONN_T *conns;
 
 static int conn_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
-static int send_value(void *v, double f);
+static int send_value(void *v, double f, bool valid);
 static bool parse_payload(const MQTT_VAL_T *val, const char *buf, double *f);
 
 static int conn_startup(MQTT_CONN_T *conn);
@@ -140,7 +140,7 @@ static void message_callback(struct mosquitto *mosq, void *obj, const struct mos
       }
 
       // dispatch value
-      uvrgw_conf_disp_val(val->disp, val, f);
+      uvrgw_conf_disp_val(val->disp, val, f, true);
       return;
     }
   }
@@ -266,7 +266,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host) < 0) {
+  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host, val, 0.0, 0) < 0) {
     return -1;
   }
 
@@ -453,11 +453,12 @@ static void conn_destroy(MQTT_CONN_T *conn) {
  * contact values publishes "CLOSED"/"OPEN"; for number values uses snprintf
  * with the configured format string.
  *
- * @param v  @c MQTT_VAL_T pointer.
- * @param f  Dispatched value.
- * @return   0 on success, -1 on publish error.
+ * @param v      @c MQTT_VAL_T pointer.
+ * @param f      Dispatched value.
+ * @param valid  Validity (unused, outputs write every value).
+ * @return       0 on success, -1 on publish error.
  */
-static int send_value(void *v, double f) {
+static int send_value(void *v, double f, bool valid) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) v;
   MQTT_CONN_T *conn = val->conn;
   char buf[32];

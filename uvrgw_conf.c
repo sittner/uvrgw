@@ -546,6 +546,7 @@ void uvrgw_conf_cleanup(void) {
   dp = disp;
   while (dp != NULL) {
     next = dp->next;
+    pthread_mutex_destroy(&dp->disp_lock);
     pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
     free(dp->producer);
@@ -642,6 +643,7 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
       return NULL;
     }
     dp->name = uvrgw_conf_strdup(name);
+    pthread_mutex_init(&dp->disp_lock, NULL);
     pthread_mutex_init(&dp->last_lock, NULL);
 
     // append new dispatcher to list
@@ -662,12 +664,16 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
 /**
  * @brief Register the producer of a value (see header).
  *
- * @param dp        Dispatcher.
- * @param module    Module/section type.
- * @param instance  Section identification.
- * @return          0 on success, -1 on duplicate producer or OOM.
+ * @param dp             Dispatcher.
+ * @param module         Module/section type.
+ * @param instance       Section identification.
+ * @param val            Producer's value pointer.
+ * @param init_value     Start and reset value.
+ * @param stale_timeout  Timeout in ms; 0 = never.
+ * @return               0 on success, -1 on duplicate producer or OOM.
  */
-int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance) {
+int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance,
+                            void *val, double init_value, int stale_timeout) {
   char *owner;
 
   owner = malloc(strlen(module) + strlen(instance) + 4);
@@ -684,6 +690,10 @@ int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, c
   }
 
   dp->producer = owner;
+  dp->producer_val = val;
+  dp->init_value = init_value;
+  dp->stale_timeout = stale_timeout;
+  dp->last_value = init_value;
   return 0;
 }
 
@@ -734,58 +744,63 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 /**
  * @brief Store the value and fire all output callbacks, excluding the source.
  *
- * NaN (invalid reading) is dropped.
+ * Non-finite values are dropped.
  *
- * @param dp   Dispatcher.
- * @param val  Source value pointer (excluded from delivery).
- * @param f    Dispatched value.
+ * @param dp     Dispatcher.
+ * @param val    Source value pointer (excluded from delivery).
+ * @param f      Dispatched value.
+ * @param valid  True for current data.
  */
-void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
+void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid) {
   int i;
   UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;
 
-  // drop invalid readings
-  if (isnan(f)) {
+  // keep the stored value finite
+  if (!isfinite(f)) {
     return;
   }
+
+  pthread_mutex_lock(&dp->disp_lock);
 
   // remember last value
   pthread_mutex_lock(&dp->last_lock);
   dp->last_value = f;
-  dp->last_update = utl_get_ticks();
-  dp->updated = true;
+  dp->valid = valid;
+  if (valid) {
+    dp->last_data = utl_get_ticks();
+  }
   pthread_mutex_unlock(&dp->last_lock);
 
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {
       // TODO: handle error
-      cbv->cb(cbv->val, f);
+      cbv->cb(cbv->val, f, valid);
     }
   }
+
+  pthread_mutex_unlock(&dp->disp_lock);
 }
 
 /**
- * @brief Read the last dispatched value and its update time.
+ * @brief Read the current value and its validity.
  *
  * @param dp  Dispatcher.
- * @param f   Output: last value.
- * @param ts  Output: monotonic update time in ms (may be NULL).
- * @return    true if a value has been dispatched.
+ * @param f   Output: current value.
+ * @param ts  Output: monotonic time of the last valid data in ms (may be NULL).
+ * @return    true if the value is valid.
  */
 bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts) {
-  bool updated;
+  bool valid;
 
   pthread_mutex_lock(&dp->last_lock);
-  updated = dp->updated;
-  if (updated) {
-    *f = dp->last_value;
-    if (ts != NULL) {
-      *ts = dp->last_update;
-    }
+  valid = dp->valid;
+  *f = dp->last_value;
+  if (ts != NULL) {
+    *ts = dp->last_data;
   }
   pthread_mutex_unlock(&dp->last_lock);
 
-  return updated;
+  return valid;
 }
 
 /**

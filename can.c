@@ -53,7 +53,7 @@ static void *iface_thread(void *ptr);
 static int iface_task(CAN_IFACE_T *iface);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
-static int send_value(void *v, double f);
+static int send_value(void *v, double f, bool valid);
 static int send_timestamp(CAN_IFACE_T *iface);
 
 void can_init(void) {
@@ -286,7 +286,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->frame->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "can", val->frame->iface->interface) < 0) {
+  if (val->frame->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "can", val->frame->iface->interface, val, 0.0, 0) < 0) {
     return -1;
   }
 
@@ -428,7 +428,7 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
       }
 
       // dispatch value
-      uvrgw_conf_disp_val(val->disp, val, f * val->scale + val->offset);
+      uvrgw_conf_disp_val(val->disp, val, f * val->scale + val->offset, true);
     }
   }
 
@@ -552,11 +552,12 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
  * @c send_buf.  Sets @c send_time if not already armed, coalescing
  * multiple updates within the @c send_timeout window.
  *
- * @param v  @c CAN_VAL_T pointer.
- * @param f  Dispatched value.
- * @return   0 on success.
+ * @param v      @c CAN_VAL_T pointer.
+ * @param f      Dispatched value.
+ * @param valid  Validity (unused, outputs write every value).
+ * @return       0 on success.
  */
-static int send_value(void *v, double f) {
+static int send_value(void *v, double f, bool valid) {
   int64_t now;
   CAN_VAL_T *val = (CAN_VAL_T *) v;
   CAN_FRAME_T *frame = val->frame;

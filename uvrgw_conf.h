@@ -95,11 +95,13 @@ typedef int (* UVRGW_CONF_CONFIG_CHILD_CB)(cfg_t *cfg, void *ctx, void *child);
 /**
  * @brief Callback invoked when a dispatched value should be forwarded to an output.
  *
- * @param v  Protocol-specific value context pointer (e.g. @c CAN_VAL_T *).
- * @param f  The value as a double.
- * @return   0 on success, negative on error.
+ * @param v      Protocol-specific value context pointer (e.g. @c CAN_VAL_T *).
+ * @param f      The value as a double (always finite).
+ * @param valid  True if @p f is current data, false if it is a start or
+ *               reset value or a value computed from invalid data.
+ * @return       0 on success, negative on error.
  */
-typedef int (* UVRGW_CONF_DISPATCH_CB)(void *v, double f);
+typedef int (* UVRGW_CONF_DISPATCH_CB)(void *v, double f, bool valid);
 
 /**
  * @brief Associates a protocol value with its dispatch callback.
@@ -124,9 +126,20 @@ struct UVRGW_CONF_VAL_DISPATCH;
  * At most one module may publish (produce) a name; it registers itself
  * with uvrgw_conf_set_producer() during configuration.
  *
- * The dispatcher also keeps the last dispatched value together with its
- * update time, so consumers can read the current value on demand and
- * detect stale values (see uvrgw_conf_get_val()).
+ * The dispatcher also keeps the last dispatched value and its validity,
+ * so consumers can read the current value on demand (see
+ * uvrgw_conf_get_val()).  The value is always a finite number; it starts
+ * at the producer's @c init_value and is invalid until the first data.
+ *
+ * Locking: @c disp_lock is held from storing a value until all callbacks
+ * have returned, so the stored value and the values delivered to the
+ * outputs cannot get out of order.  Callbacks may dispatch other names
+ * (e.g. a counter dispatching its total from the callback of its source).
+ * Locks are thus taken along the data flow, which is deadlock free as
+ * long as the synchronous data flow has no cycle (evals break cycles,
+ * their callbacks only mark the eval as pending).  A callback must never
+ * dispatch the name it was called for.  @c last_lock only protects the
+ * stored value for readers, so a slow callback does not block them.
  */
 typedef struct UVRGW_CONF_VAL_DISPATCH {
   const char *name;                       /**< Logical value name shared across protocol sections. */
@@ -137,10 +150,15 @@ typedef struct UVRGW_CONF_VAL_DISPATCH {
   int value_cbs_pos;                      /**< Next free slot in @c value_cbs (used during registration). */
   struct UVRGW_CONF_DISPATCH_CB_VAL *value_cbs; /**< Array of @c value_count callback entries. */
 
-  pthread_mutex_t last_lock;              /**< Protects @c last_value, @c last_update and @c updated. */
-  double last_value;                      /**< Last dispatched value. */
-  int64_t last_update;                    /**< Monotonic time (ms) of the last update. */
-  bool updated;                           /**< True once a value has been dispatched. */
+  void *producer_val;                     /**< Producer's value pointer (source identifier for its dispatches); NULL if none. */
+  double init_value;                      /**< Start value of the producer. */
+  int stale_timeout;                      /**< Max. time (ms) without data before reset to @c init_value; 0 = never. */
+
+  pthread_mutex_t disp_lock;              /**< Held while storing a value and firing the callbacks. */
+  pthread_mutex_t last_lock;              /**< Protects @c last_value, @c valid and @c last_data. */
+  double last_value;                      /**< Last dispatched value (always finite). */
+  bool valid;                             /**< True if @c last_value is current data. */
+  int64_t last_data;                      /**< Monotonic time (ms) of the last valid data; 0 if none. */
 } UVRGW_CONF_VAL_DISPATCH_T;
 
 /**
@@ -210,12 +228,20 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
  * (inputs, counters, evals).  A name may have only one producer; a second
  * one is a configuration error, logged with both owners.
  *
- * @param dp        Dispatcher of the published name.
- * @param module    Module/section type (e.g. "modbus_tcp", "counter").
- * @param instance  Section identification (e.g. IP address, counter name).
- * @return          0 on success, -1 if the name already has a producer.
+ * The stored value starts at @p init_value (it is not dispatched).
+ *
+ * @param dp             Dispatcher of the published name.
+ * @param module         Module/section type (e.g. "modbus_tcp", "counter").
+ * @param instance       Section identification (e.g. IP address, counter name).
+ * @param val            Producer's value pointer, the source identifier it
+ *                       passes to uvrgw_conf_disp_val().
+ * @param init_value     Value before the first data and after a timeout.
+ * @param stale_timeout  Max. time (ms) without data before the value is
+ *                       reset to @p init_value; 0 = never.
+ * @return               0 on success, -1 if the name already has a producer.
  */
-int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance);
+int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance,
+                            void *val, double init_value, int stale_timeout);
 
 /**
  * @brief Get the head of the dispatcher list.
@@ -243,30 +269,34 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 /**
  * @brief Dispatch a value to all registered outputs except the source.
  *
- * Stores @p f as the dispatcher's last value, then iterates over all
- * entries in @p dp->value_cbs and calls every non-NULL callback whose
- * @c val pointer differs from @p val, preventing the source from receiving
- * its own value back.
+ * Stores @p f and @p valid as the dispatcher's last value, then iterates
+ * over all entries in @p dp->value_cbs and calls every non-NULL callback
+ * whose @c val pointer differs from @p val, preventing the source from
+ * receiving its own value back.  Holds @c disp_lock meanwhile (see
+ * @c UVRGW_CONF_VAL_DISPATCH_T).
  *
- * NaN marks an invalid reading (e.g. a "not implemented" float register):
- * it is neither stored nor forwarded, so the value becomes stale.
+ * A non-finite @p f is neither stored nor forwarded; inputs drop invalid
+ * readings themselves, this only keeps the stored value finite.
  *
- * @param dp   Dispatcher to fire.
- * @param val  Source value pointer (excluded from delivery).
- * @param f    Value to dispatch as a double.
+ * @param dp     Dispatcher to fire.
+ * @param val    Source value pointer (excluded from delivery).
+ * @param f      Value to dispatch as a double.
+ * @param valid  True for current data (inputs), false for a reset or a
+ *               value computed from invalid data.
  */
-void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f);
+void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid);
 
 /**
- * @brief Get the last dispatched value and its update time.
+ * @brief Get the current value and its validity.
  *
  * Thread-safe; may be called from any thread.
  *
  * @param dp  Dispatcher to read.
- * @param f   Output: last value (unchanged if none was dispatched yet).
+ * @param f   Output: current value (the producer's @c init_value before
+ *            the first data).
  * @param ts  Output: monotonic time (ms, see utl_get_ticks()) of the last
- *            update (unchanged if none was dispatched yet); may be NULL.
- * @return    true if a value has been dispatched, false otherwise.
+ *            valid data (0 if none); may be NULL.
+ * @return    true if the value is valid, false otherwise.
  */
 bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts);
 

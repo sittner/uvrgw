@@ -63,7 +63,7 @@ static void *master_thread(void *ptr);
 static int master_task(MB_MASTER_T *master, int64_t now);
 static int slave_task_read(MB_SLAVE_T *slave, int64_t now);
 static int slave_task_write(MB_SLAVE_T *slave, int64_t now);
-static int write_schedule(void *v, double f);
+static int write_schedule(void *v, double f, bool valid);
 static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_block_bits(MB_BLOCK_T *blk);
 static int read_block_registers(MB_BLOCK_T *blk);
@@ -370,9 +370,9 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   if (val->block->dir == UVRGW_CONF_VAL_DIR_IN) {
     master = val->block->slave->master;
     if (master->tcp) {
-      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip);
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip, val, 0.0, 0);
     } else {
-      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface);
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface, val, 0.0, 0);
     }
     if (ret < 0) {
       return -1;
@@ -824,7 +824,7 @@ static int read_block_bits(MB_BLOCK_T *blk) {
   }
 
   for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
-    uvrgw_conf_disp_val(val->disp, val, buf[val->reg] ? 1.0 : 0.0);
+    uvrgw_conf_disp_val(val->disp, val, buf[val->reg] ? 1.0 : 0.0, true);
   }
 
   return 0;
@@ -960,13 +960,13 @@ static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double s
       raw = (double) f32;
       break;
     case UVRGW_CONF_MB_TYPE_BITMASK:
-      uvrgw_conf_disp_val(dpval->disp, dpval, (regs[0] & (1 << dpval->bit)) ? 1.0 : 0.0);
+      uvrgw_conf_disp_val(dpval->disp, dpval, (regs[0] & (1 << dpval->bit)) ? 1.0 : 0.0, true);
       return;
     default:
       return;
   }
 
-  uvrgw_conf_disp_val(dpval->disp, dpval, raw * sf * dpval->scale + dpval->offset);
+  uvrgw_conf_disp_val(dpval->disp, dpval, raw * sf * dpval->scale + dpval->offset, true);
 }
 
 /**
@@ -1027,11 +1027,12 @@ static void set_u32(const MB_SLAVE_VAL_T *val, uint16_t *regs, uint32_t v) {
  * and @c write_pending.  The actual Modbus write is performed by
  * write_execute() in the polling thread.
  *
- * @param v  @c MB_SLAVE_VAL_T pointer.
- * @param f  Value to write.
- * @return   0.
+ * @param v      @c MB_SLAVE_VAL_T pointer.
+ * @param f      Value to write.
+ * @param valid  Validity (unused, outputs write every value).
+ * @return       0.
  */
-static int write_schedule(void *v, double f) {
+static int write_schedule(void *v, double f, bool valid) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) v;
   MB_SLAVE_T *slave = val->block->slave;
   MB_MASTER_T *master = slave->master;
