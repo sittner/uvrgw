@@ -1089,6 +1089,8 @@ static int write_schedule(void *v, double f, bool valid) {
  * Atomically reads and clears @c write_pending, then issues the
  * appropriate modbus_write_bit() or modbus_write_register() call.
  * For bitmask values the shared @c valbuf is updated before writing.
+ * Integer values are rounded to the nearest integer and limited to the
+ * range of their type.
  *
  * @param val  Value to write.
  * @return     1 if a write was issued, 0 if nothing was pending,
@@ -1130,20 +1132,20 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
       break;
     case UVRGW_CONF_MB_TYPE_S16:
       f = (f - val->offset) / val->scale;
-      ret = modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
+      ret = modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(round(f), INT16_MIN, INT16_MAX));
       break;
     case UVRGW_CONF_MB_TYPE_U16:
       f = (f - val->offset) / val->scale;
-      ret = modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
+      ret = modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(round(f), 0.0, UINT16_MAX));
       break;
     case UVRGW_CONF_MB_TYPE_S32:
       f = (f - val->offset) / val->scale;
-      set_u32(val, regs, (uint32_t) ((int32_t) utl_val_limit(f, INT32_MIN, INT32_MAX)));
+      set_u32(val, regs, (uint32_t) ((int32_t) utl_val_limit(round(f), INT32_MIN, INT32_MAX)));
       ret = modbus_write_registers(master->ctx, addr, 2, regs);
       break;
     case UVRGW_CONF_MB_TYPE_U32:
       f = (f - val->offset) / val->scale;
-      set_u32(val, regs, (uint32_t) utl_val_limit(f, 0.0, UINT32_MAX));
+      set_u32(val, regs, (uint32_t) utl_val_limit(round(f), 0.0, UINT32_MAX));
       ret = modbus_write_registers(master->ctx, addr, 2, regs);
       break;
     case UVRGW_CONF_MB_TYPE_F32:

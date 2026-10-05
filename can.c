@@ -35,6 +35,7 @@
 #include <sys/eventfd.h>
 #include <syslog.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <time.h>
 #include <sys/time.h>
@@ -565,7 +566,8 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
  *
  * Invoked by the value dispatcher when a value with the same name as an
  * OUT-direction CAN value is received.  Applies the inverse of the
- * scale/offset transform and writes the encoded bytes into the shared
+ * scale/offset transform, rounds to the nearest integer, limits to the
+ * range of the type and writes the encoded bytes into the shared
  * @c send_buf.  Sets @c send_time if not already armed, coalescing
  * multiple updates within the @c send_timeout window.
  *
@@ -602,22 +604,22 @@ static int send_value(void *v, double f, bool valid) {
     p = &frame->send_buf.data[val->pos];
     switch (val->type) {
       case UVRGW_CONF_CAN_TYPE_U8:
-        write_value(p, 1, (uint8_t) utl_val_limit(f, 0.0, UINT8_MAX));
+        write_value(p, 1, (uint8_t) utl_val_limit(round(f), 0.0, UINT8_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S8:
-        write_value(p, 1, (int8_t) utl_val_limit(f, INT8_MIN, INT8_MAX));
+        write_value(p, 1, (int8_t) utl_val_limit(round(f), INT8_MIN, INT8_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_U16:
-        write_value(p, 2, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
+        write_value(p, 2, (uint16_t) utl_val_limit(round(f), 0.0, UINT16_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S16:
-        write_value(p, 2, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
+        write_value(p, 2, (int16_t) utl_val_limit(round(f), INT16_MIN, INT16_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_U32:
-        write_value(p, 4, (uint32_t) utl_val_limit(f, 0.0, UINT32_MAX));
+        write_value(p, 4, (uint32_t) utl_val_limit(round(f), 0.0, UINT32_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S32:
-        write_value(p, 4, (int32_t) utl_val_limit(f, INT32_MIN, INT32_MAX));
+        write_value(p, 4, (int32_t) utl_val_limit(round(f), INT32_MIN, INT32_MAX));
         break;
     }
   }

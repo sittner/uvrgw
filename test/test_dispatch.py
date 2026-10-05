@@ -4,7 +4,7 @@ import re
 import struct
 import time
 
-from uvrgwtest import Env, S, ana_id
+from uvrgwtest import Env, S, ana_id, wait_until
 
 TIMEOUT = 600     # ms, race test
 
@@ -68,6 +68,51 @@ can {{
         sub.wait_value('out/p', -5)
         assert can_value() == -5
         assert mb_value() == -5
+        u.stop()
+
+
+def test_outputs_round():
+    """Integer outputs are rounded, not truncated (0.3 / 0.1 is 2.99...)."""
+    with Env() as env:
+        bus = env.can()
+        js = env.json(dict(x=0.3, y=-0.3))
+        dev = env.modbus_tcp()
+        u = env.uvrgw('''json {{
+  url = "{url}"
+  interval = 200
+  value x {{ path = "x" }}
+  value y {{ path = "y" }}
+}}
+modbus_tcp {{
+  ip = "127.0.0.1"
+  port = {mb}
+  slave {{
+    id = 1
+    interval = 200
+    block {{
+      dir = out
+      regtype = reg
+      addr = 10
+      count = 2
+      value x {{ reg = 0  type = u16  scale = 0.1 }}
+      value y {{ reg = 1  type = s16  scale = 0.1 }}
+    }}
+  }}
+}}
+can {{
+  interface = "vcan0"
+  send_timeout = 100
+  frame {{
+    can_id = "ANA:2:0"
+    dir = out
+    value x {{ type = u16  pos = 0  scale = 0.1 }}
+    value y {{ type = s16  pos = 2  scale = 0.1 }}
+  }}
+}}
+'''.format(url=js.url, mb=dev.port))
+        assert struct.unpack('<Hh', bus.recv(ana_id(2, 0))[:4]) == (3, -3)
+        wait_until(lambda: 10 in dev.holding and 11 in dev.holding, 5, 'modbus writes')
+        assert (dev.holding[10], dev.holding[11]) == (3, 0xfffd), dev.holding
         u.stop()
 
 
