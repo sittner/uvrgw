@@ -94,6 +94,11 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (conn->interval <= 0) {
+    syslog(LOG_ERR, "json '%s': interval invalid.", conn->url);
+    return -1;
+  }
+
   return uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(REST_VAL_T), conn, value_configure);
 }
 

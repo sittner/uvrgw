@@ -157,6 +157,11 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (slave->interval <= 0) {
+    syslog(LOG_ERR, "modbus slave %d: interval not given or invalid.", slave->id);
+    return -1;
+  }
+
   return uvrgw_conf_config_childs(cfg, "block", &slave->blocks_count, (void **) &slave->blocks, sizeof(MB_BLOCK_T), slave, block_configure);
 }
 
@@ -795,16 +800,22 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
  * @brief Write one pending output value from @p slave's pending list.
  *
  * Walks @c value_out_curr until a value with @c write_pending is found,
- * then calls write_execute().
+ * then calls write_execute().  After a failed write (which stays pending)
+ * the writes of the slave pause for its poll interval.
  *
  * @param slave  Slave to service.
- * @param now    Current monotonic timestamp (ms, unused but kept for API consistency).
+ * @param now    Current monotonic timestamp (ms).
  * @return       1 if a write was performed, 0 if nothing was pending,
  *               -1 on Modbus error.
  */
 static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
   int ret;
   MB_SLAVE_VAL_T *val;
+
+  // pause after a failed write
+  if (slave->next_write > now) {
+    return 0;
+  }
 
   // process next pending value
   while (true) {
@@ -816,6 +827,9 @@ static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
 
     // execute write, if pending (only one request per timer period)
     ret = write_execute(val);
+    if (ret < 0) {
+      slave->next_write = utl_get_ticks() + slave->interval;
+    }
     if (ret != 0) {
       return ret;
     }
@@ -1087,7 +1101,9 @@ static int write_schedule(void *v, double f, bool valid) {
  * @brief Execute a pending Modbus write for one value.
  *
  * Atomically reads and clears @c write_pending, then issues the
- * appropriate modbus_write_bit() or modbus_write_register() call.
+ * appropriate modbus_write_bit() or modbus_write_register() call.  A
+ * failed write stays pending (unless a newer value was queued meanwhile),
+ * so it is retried.
  * For bitmask values the shared @c valbuf is updated before writing.
  * Integer values are rounded to the nearest integer and limited to the
  * range of their type.
@@ -1101,7 +1117,7 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   MB_MASTER_T *master = slave->master;
   int addr = val->block->addr + val->reg;
   bool pending;
-  double f;
+  double f, queued;
   uint16_t *buf;
   uint16_t regs[2];
   float f32;
@@ -1112,6 +1128,7 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   pthread_mutex_lock(&master->write_lock);
   pending = val->write_pending;
   f = val->write_value;
+  queued = f;
   val->write_pending = false;
   pthread_mutex_unlock(&master->write_lock);
 
@@ -1173,6 +1190,15 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
       syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
       val->write_failed = true;
     }
+
+    // keep the value for a retry, a newer one wins
+    pthread_mutex_lock(&master->write_lock);
+    if (!val->write_pending) {
+      val->write_value = queued;
+      val->write_pending = true;
+    }
+    pthread_mutex_unlock(&master->write_lock);
+
     if (err < MODBUS_ENOBASE) {
       link_error(master);
     }

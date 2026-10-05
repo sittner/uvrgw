@@ -269,3 +269,46 @@ modbus_tcp {{
         assert len(dev.writes) > 0 and dev.writes[-1] == (10, [n])
         u.stop()
         assert len(u.find('Failed to write MODBUS value')) == 1, u.find('Failed to write MODBUS value')
+
+
+def test_modbus_write_retry():
+    """A failed Modbus write is retried without a new value."""
+    with Env() as env:
+        broker = env.broker()
+        pub = env.mqtt(broker.port)
+        dev = env.modbus_tcp()
+        dev.fail = True
+        u = env.uvrgw('''mqtt {{
+  host = "127.0.0.1"
+  port = {mqtt}
+  value p {{ dir = in  type = number  topic = "in/p" }}
+}}
+modbus_tcp {{
+  ip = "127.0.0.1"
+  port = {mb}
+  timeout = 200
+  slave {{
+    id = 1
+    interval = 200
+    block {{
+      dir = out
+      regtype = reg
+      addr = 10
+      count = 1
+      value p {{ reg = 0  type = s16 }}
+    }}
+  }}
+}}
+'''.format(mqtt=broker.port, mb=dev.port))
+        u.wait_log('mqtt connected')
+        time.sleep(0.2)     # subscription
+        pub.pub('in/p', '42')
+        u.wait_log(r"Failed to write MODBUS value 'p' to slave 1")
+        assert dev.writes == []
+        dev.fail = False
+        u.wait_log(r"MODBUS value 'p' written to slave 1 again")
+        assert dev.writes == [(10, [42])], dev.writes
+        time.sleep(S.t(0.5))
+        assert dev.writes == [(10, [42])], dev.writes
+        u.stop()
+        assert len(u.find('Failed to write MODBUS value')) == 1, u.find('Failed to write MODBUS value')

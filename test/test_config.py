@@ -100,6 +100,10 @@ def test_config_errors():
     assert errs[0] == "value 'nope' is not produced by any module.", errs
     errs = load(JSON.replace('value t { path = "t" }', 'value t { path = "t"  init_value = nan }'))
     assert "init_value invalid" in errs[0], errs
+    errs = load(JSON.replace('interval = 1000', 'interval = 0'))
+    assert re.search(r"json '.*': interval invalid\.", errs[0]), errs
+    errs = load(JSON + 'modbus_tcp {\n  ip = "127.0.0.1"\n  slave {\n    id = 3\n    block { dir = out  regtype = reg  addr = 0  count = 1  value t { reg = 0  type = s16 } }\n  }\n}\n')
+    assert errs[0] == "modbus slave 3: interval not given or invalid.", errs
     errs = load(JSON + 'eval e {\n  value t { expr = "1" }\n}\n')
     assert re.search(r"value 't' of eval 'e' is already produced by json", errs[0]), errs
 

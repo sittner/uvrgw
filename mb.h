@@ -103,7 +103,7 @@ typedef struct MB_BLOCK {
  */
 typedef struct MB_SLAVE {
   int id;                    /**< Modbus slave address (1–247). */
-  int interval;              /**< Polling interval in ms. */
+  int interval;              /**< Polling interval in ms (> 0); also the pause after a failed write. */
   double init_value;         /**< Default @c init_value for all input values of this slave. */
   int stale_timeout;         /**< Default @c stale_timeout (ms) for all input values of this slave; 0 = never. */
 
@@ -118,6 +118,7 @@ typedef struct MB_SLAVE {
   struct MB_SLAVE_VAL *value_out_curr; /**< Current position in the output-pending write iterator. */
 
   int64_t next_poll;         /**< Monotonic time (ms) for the next poll. */
+  int64_t next_write;        /**< Monotonic time (ms) before which no write is issued (set after a failed write). */
 } MB_SLAVE_T;
 
 /**
