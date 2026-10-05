@@ -10,3 +10,14 @@
    ...
    fun:modbus_rtu_set_rts
 }
+
+# libmosquitto's network thread waits in pselect() with a signal mask.
+# Valgrind replaces the mask by a copy in its own memory ("arena core")
+# and sometimes reports that copy as unaddressable: a valgrind artefact.
+{
+   valgrind-pselect6-sigmask
+   Memcheck:Param
+   pselect6(sig)
+   ...
+   fun:pselect
+}

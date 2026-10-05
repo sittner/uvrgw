@@ -54,8 +54,12 @@ class Feeder:
         self.running = False
 
 
-def scenario(env, broker, input_conf, feed, stop):
-    """feed(dict) delivers values from now on, stop() makes the source dead."""
+def scenario(env, broker, input_conf, feed, stop, fail_log=None, ok_log=None):
+    """feed(dict) delivers values from now on, stop() makes the source dead.
+
+    A polled source is dead twice (at startup and later): its failure
+    (@p fail_log) and recovery (@p ok_log) must be logged once each time,
+    not once per poll."""
     sub = env.mqtt(broker.port, '#')
     u = env.uvrgw(input_conf + OUTPUTS.format(port=broker.port))
 
@@ -95,6 +99,9 @@ def scenario(env, broker, input_conf, feed, stop):
         sub.wait_value('out/' + k, v, since=m)
     sub.snapshot('log', lambda s: (s['a'], s['b'], s['c']) == (11, 21, 31), since=m)
     u.stop()
+    if fail_log:
+        assert len(u.find(fail_log)) == 2, u.find(fail_log)
+        assert len(u.find(ok_log)) == 2, u.find(ok_log)
 
 
 def test_json():
@@ -110,7 +117,7 @@ def test_json():
         def stop():
             js.data = None
 
-        scenario(env, broker, conf, feed, stop)
+        scenario(env, broker, conf, feed, stop, 'Failed to perform GET', r"Data of url '.*' received again")
 
 
 def test_mqtt():
@@ -145,7 +152,7 @@ def modbus_scenario(env, broker, dev, head):
         dev.fail = True
 
     dev.fail = True
-    scenario(env, broker, modbus_conf(head), feed, stop)
+    scenario(env, broker, modbus_conf(head), feed, stop, 'Failed to read MODBUS block', r'MODBUS block of slave 1 \(start 0\) read again')
 
 
 def test_modbus_tcp():
@@ -177,3 +184,22 @@ def test_can():
             f.values = None
 
         scenario(env, broker, conf, feed, stop)
+
+
+def test_json_missing_path():
+    """A missing path is logged once until it is found again."""
+    with Env() as env:
+        js = env.json(dict(a=1))
+        u = env.uvrgw('json {\n  url = "%s"\n  interval = 200\n  value a { path = "a" }\n  value b { path = "x.b" }\n}\n'
+                      'eval e {\n  value s { expr = "a + b" }\n}\n' % js.url)
+        u.wait_log(r"Failed lookup json path 'x\.b'")
+        time.sleep(S.t(1))
+        js.data = dict(a=1, x=dict(b='text'))      # still no number: same state
+        time.sleep(S.t(1))
+        js.data = dict(a=1, x=dict(b=2))
+        u.wait_log(r"Json path 'x\.b' for url '.*' found again")
+        time.sleep(S.t(1))
+        u.stop()
+        # path missing and wrong type are one state: logged once
+        assert len(u.find("Failed lookup json path|Invalid value type")) == 1, u.find("json path|value type")
+        assert len(u.find("found again")) == 1

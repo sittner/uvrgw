@@ -32,6 +32,7 @@
 #define CONN_THREAD_PERIOD_US 100000
 
 typedef struct {
+  REST_CONN_T *conn;
   struct json_tokener *tok;
   json_object *json;
 } REST_GET_STATE_T;
@@ -45,7 +46,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child);
 static void *conn_thread(void *ptr);
 static int conn_task(REST_CONN_T *conn);
 
-static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout);
+static json_object *rest_get_json(REST_CONN_T *conn);
 static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb, void *userp);
 static json_object *json_path_lookup(json_object *root, const char *path);
 static json_object *json_path_lookup_recursive(json_object *root, char *path);
@@ -249,9 +250,13 @@ static int conn_task(REST_CONN_T *conn) {
   conn->next_poll = now + conn->interval;
 
   // load json from server
-  json = rest_get_json(conn->url, conn->user, conn->pwd, conn->timeout);
+  json = rest_get_json(conn);
   if (json == NULL) {
     return 0;
+  }
+  if (conn->get_failed) {
+    syslog(LOG_INFO, "Data of url '%s' received again.", conn->url);
+    conn->get_failed = false;
   }
 
   // check validity gate (e.g. device time synchronised)
@@ -287,11 +292,22 @@ static int conn_task(REST_CONN_T *conn) {
         f = json_object_get_double(json_val) * val->scale + val->offset;
         break;
       case json_type_null:
-        syslog(LOG_WARNING, "Failed lookup json path '%s' for url '%s'.", val->path, conn->url);
+        if (!val->missing) {
+          syslog(LOG_WARNING, "Failed lookup json path '%s' for url '%s'.", val->path, conn->url);
+          val->missing = true;
+        }
         continue;
       default:
-        syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, val->path, conn->url);
+        if (!val->missing) {
+          syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, val->path, conn->url);
+          val->missing = true;
+        }
         continue;
+    }
+
+    if (val->missing) {
+      syslog(LOG_INFO, "Json path '%s' for url '%s' found again.", val->path, conn->url);
+      val->missing = false;
     }
 
     // drop non-finite values (no data)
@@ -313,20 +329,18 @@ static int conn_task(REST_CONN_T *conn) {
  *
  * Uses a libcurl easy handle with the json_tokener streaming callback.
  * Sets the Accept header to "application/json" and applies optional
- * Basic-Auth credentials and a millisecond timeout.
+ * Basic-Auth credentials and a millisecond timeout.  A failed request is
+ * logged once until conn_task() receives data again (@c get_failed).
  *
  * The caller is responsible for releasing the returned object with
  * json_object_put().
  *
- * @param url      URL to fetch.
- * @param user     HTTP Basic-Auth username, or NULL.
- * @param pwd      HTTP Basic-Auth password, or NULL.
- * @param timeout  Request timeout in milliseconds.
- * @return         Parsed json_object on success, NULL on error.
+ * @param conn  Connection (URL, credentials, timeout).
+ * @return      Parsed json_object on success, NULL on error.
  */
-static json_object *rest_get_json(const char *url, const char *user, const char *pwd, long timeout) {
+static json_object *rest_get_json(REST_CONN_T *conn) {
   CURL *ch;
-  REST_GET_STATE_T state = { .tok = NULL, .json = NULL } ;
+  REST_GET_STATE_T state = { .conn = conn, .tok = NULL, .json = NULL } ;
   CURLcode err;
   struct curl_slist *headers = NULL;
 
@@ -348,21 +362,21 @@ static json_object *rest_get_json(const char *url, const char *user, const char 
   curl_easy_setopt(ch, CURLOPT_HTTPHEADER, headers);
 
   // set url to fetch
-  curl_easy_setopt(ch, CURLOPT_URL, url);
+  curl_easy_setopt(ch, CURLOPT_URL, conn->url);
 
   // set default user agent
   curl_easy_setopt(ch, CURLOPT_USERAGENT, "libcurl-agent/1.0");
 
   // set auth data
-  if (user != NULL) {
-    curl_easy_setopt(ch, CURLOPT_USERNAME, user);
+  if (conn->user != NULL) {
+    curl_easy_setopt(ch, CURLOPT_USERNAME, conn->user);
   }
-  if (pwd != NULL) {
-    curl_easy_setopt(ch, CURLOPT_PASSWORD, pwd);
+  if (conn->pwd != NULL) {
+    curl_easy_setopt(ch, CURLOPT_PASSWORD, conn->pwd);
   }
 
   // set timeout
-  curl_easy_setopt(ch, CURLOPT_TIMEOUT_MS, timeout);
+  curl_easy_setopt(ch, CURLOPT_TIMEOUT_MS, (long) conn->timeout);
 
   // treat HTTP error status (>= 400) as failure
   curl_easy_setopt(ch, CURLOPT_FAILONERROR, 1L);
@@ -376,14 +390,20 @@ static json_object *rest_get_json(const char *url, const char *user, const char 
   // perform the get
   err = curl_easy_perform(ch);
   if (err != CURLE_OK) {
-    syslog(LOG_ERR, "Failed to perform GET of URL '%s' (error %d [%s]).",
-      url, err, curl_easy_strerror(err));
+    if (!conn->get_failed) {
+      syslog(LOG_ERR, "Failed to perform GET of URL '%s' (error %d [%s]).",
+        conn->url, err, curl_easy_strerror(err));
+      conn->get_failed = true;
+    }
     goto fail2;
   }
 
   // check type
   if (json_object_get_type(state.json) != json_type_object) {
-    syslog(LOG_ERR, "No JSON object returned from Server in rest_get_json (URL='%s')", url);
+    if (!conn->get_failed) {
+      syslog(LOG_ERR, "No JSON object returned from Server in rest_get_json (URL='%s')", conn->url);
+      conn->get_failed = true;
+    }
     json_object_put(state.json);
     state.json = NULL;
   }
@@ -409,7 +429,10 @@ static size_t rest_get_json_callback (void *contents, size_t size, size_t nmemb,
   // parse JSON chunk
   state->json = json_tokener_parse_ex(state->tok, contents, realsize);
   if (state->tok->err != json_tokener_continue && state->tok->err != json_tokener_success) {
-    syslog(LOG_ERR, "Failed to parse JSON in rest_write_callback (json_tokener_error=%d)", state->tok->err);
+    if (!state->conn->get_failed) {
+      syslog(LOG_ERR, "Failed to parse JSON in rest_write_callback (json_tokener_error=%d, URL='%s')", state->tok->err, state->conn->url);
+      state->conn->get_failed = true;
+    }
     return 0;
   }
 

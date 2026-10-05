@@ -180,3 +180,47 @@ counter mc {{ source = m }}
         assert u.find('reset detected|implausible') == []
         assert not errors, errors[:5]
         assert resets >= (1 if not S.valgrind else 0), 'no reset, no race tested'
+
+
+def test_modbus_write_failure():
+    """A failing Modbus write is logged once until a write succeeds again."""
+    with Env() as env:
+        js = env.json()
+        dev = env.modbus_tcp()
+        dev.fail = True
+        u = env.uvrgw('''json {{
+  url = "{url}"
+  interval = 200
+  value p {{ path = "p" }}
+}}
+modbus_tcp {{
+  ip = "127.0.0.1"
+  port = {mb}
+  timeout = 200
+  slave {{
+    id = 1
+    interval = 200
+    block {{
+      dir = out
+      regtype = reg
+      addr = 10
+      count = 1
+      value p {{ reg = 0  type = s16 }}
+    }}
+  }}
+}}
+'''.format(url=js.url, mb=dev.port))
+        n = 0
+        end = time.monotonic() + S.t(2)
+        while time.monotonic() < end:       # a new value (and write) every poll
+            n += 1
+            js.data = dict(p=n)
+            time.sleep(0.25)
+        u.wait_log(r"Failed to write MODBUS value 'p' to slave 1")
+        dev.fail = False
+        n += 1
+        js.data = dict(p=n)
+        u.wait_log(r"MODBUS value 'p' written to slave 1 again")
+        assert len(dev.writes) > 0 and dev.writes[-1] == (10, [n])
+        u.stop()
+        assert len(u.find('Failed to write MODBUS value')) == 1, u.find('Failed to write MODBUS value')
