@@ -911,7 +911,7 @@ static void evaluate(EVAL_T *e) {
 
   // refresh outside values
   for (in = e->ins, idx = 0; idx < e->ins_count; in++, idx++) {
-    in->valid = uvrgw_conf_get_val(in->disp, &e->slots[in->slot], NULL);
+    in->valid = uvrgw_conf_get_val(in->disp, &e->slots[in->slot]);
   }
 
   for (v = e->values, idx = 0; idx < e->values_count; v++, idx++) {

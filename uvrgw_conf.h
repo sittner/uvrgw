@@ -154,13 +154,13 @@ typedef struct UVRGW_CONF_VAL_DISPATCH {
   double init_value;                      /**< Start value of the producer. */
   int stale_timeout;                      /**< Max. time (ms) without data before reset to @c init_value; 0 = never. */
 
-  pthread_mutex_t disp_lock;              /**< Held while storing a value and firing the callbacks; protects @c deadline and @c timed_out. */
+  pthread_mutex_t disp_lock;              /**< Held while storing a value and firing the callbacks; protects @c deadline, @c timed_out and @c received. */
   int64_t deadline;                       /**< Monotonic time (ms) at which the watchdog resets the value; 0 = disarmed. */
   bool timed_out;                         /**< Reset by the watchdog, no data since (for state logging). */
-  pthread_mutex_t last_lock;              /**< Protects @c last_value, @c valid and @c last_data. */
+  bool received;                          /**< Valid data has been dispatched at least once (for state logging). */
+  pthread_mutex_t last_lock;              /**< Protects @c last_value and @c valid. */
   double last_value;                      /**< Last dispatched value (always finite). */
   bool valid;                             /**< True if @c last_value is current data. */
-  int64_t last_data;                      /**< Monotonic time (ms) of the last valid data; 0 if none. */
 } UVRGW_CONF_VAL_DISPATCH_T;
 
 /**
@@ -297,11 +297,9 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, boo
  * @param dp  Dispatcher to read.
  * @param f   Output: current value (the producer's @c init_value before
  *            the first data).
- * @param ts  Output: monotonic time (ms, see utl_get_ticks()) of the last
- *            valid data (0 if none); may be NULL.
  * @return    true if the value is valid, false otherwise.
  */
-bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts);
+bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f);
 
 /**
  * @brief Start the watchdog that resets values without current data.

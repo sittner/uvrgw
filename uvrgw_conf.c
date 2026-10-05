@@ -789,8 +789,6 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
  * @param valid  True for current data.
  */
 void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid) {
-  int64_t now;
-
   // keep the stored value finite
   if (!isfinite(f)) {
     return;
@@ -799,19 +797,17 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, boo
   pthread_mutex_lock(&dp->disp_lock);
 
   // remember last value
-  now = utl_get_ticks();
   pthread_mutex_lock(&dp->last_lock);
   dp->last_value = f;
   dp->valid = valid;
-  if (valid) {
-    dp->last_data = now;
-  }
   pthread_mutex_unlock(&dp->last_lock);
 
   if (valid) {
+    dp->received = true;
+
     // re-arm the watchdog
     if (dp->stale_timeout > 0) {
-      dp->deadline = now + dp->stale_timeout;
+      dp->deadline = utl_get_ticks() + dp->stale_timeout;
     }
     if (dp->timed_out) {
       syslog(LOG_INFO, "value '%s' received again.", dp->name);
@@ -850,18 +846,14 @@ static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool va
  *
  * @param dp  Dispatcher.
  * @param f   Output: current value.
- * @param ts  Output: monotonic time of the last valid data in ms (may be NULL).
  * @return    true if the value is valid.
  */
-bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts) {
+bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f) {
   bool valid;
 
   pthread_mutex_lock(&dp->last_lock);
   valid = dp->valid;
   *f = dp->last_value;
-  if (ts != NULL) {
-    *ts = dp->last_data;
-  }
   pthread_mutex_unlock(&dp->last_lock);
 
   return valid;
@@ -954,8 +946,6 @@ static void *watchdog_thread(void *ptr) {
  * @param now  Current monotonic time (ms).
  */
 static void watchdog_check(UVRGW_CONF_VAL_DISPATCH_T *dp, int64_t now) {
-  bool received;
-
   pthread_mutex_lock(&dp->disp_lock);
 
   if (dp->deadline != 0 && now >= dp->deadline) {
@@ -963,12 +953,11 @@ static void watchdog_check(UVRGW_CONF_VAL_DISPATCH_T *dp, int64_t now) {
     dp->timed_out = true;
 
     pthread_mutex_lock(&dp->last_lock);
-    received = dp->last_data != 0;
     dp->last_value = dp->init_value;
     dp->valid = false;
     pthread_mutex_unlock(&dp->last_lock);
 
-    if (received) {
+    if (dp->received) {
       syslog(LOG_WARNING, "value '%s' timed out, reset to %g.", dp->name, dp->init_value);
     } else {
       syslog(LOG_WARNING, "value '%s' never received, set to %g.", dp->name, dp->init_value);

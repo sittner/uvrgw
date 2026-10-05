@@ -627,7 +627,7 @@ static bool src_get(SUNSPEC_SRC_T *src, double *f, const char **invalid) {
     return false;
   }
 
-  if (!uvrgw_conf_get_val(src->disp, &v, NULL)) {
+  if (!uvrgw_conf_get_val(src->disp, &v)) {
     if (*invalid == NULL) {
       *invalid = src->name;
     }
