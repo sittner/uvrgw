@@ -192,6 +192,8 @@ mqtt {
 
 **MQTT connection:** if the broker is not reachable (also at startup), the connection is retried automatically; connection changes are logged.
 
+**QoS:** `qos` of the section is the default of its values (and of the state topic).  With `qos` ≥ 1, every value published while the broker is not connected is kept in memory by libmosquitto and delivered after reconnect; the memory is not limited, so a long outage with many values can exhaust it.  Use `qos = 0` for values (the next update replaces a lost one) and leave QoS 1 to the loggers, which have their own `qos` (default 1).
+
 #### Logger (value snapshots for databases)
 
 A `logger` inside an `mqtt` section publishes a JSON snapshot of selected values every `interval` seconds, aligned to the clock (e.g. xx:00, xx:05, ...):
