@@ -37,21 +37,27 @@ Rules:
 
 Typical configuration:
 
-- Power, flags, setpoints, control inputs: `stale_timeout` with the
-  default `init_value = 0`, so a dead source falls back to 0 (power stops
-  being integrated, a pump enable switches off) and is logged as `null`.
-- Temperatures and other measurements: `stale_timeout` as well; the
-  logger writes `null`, the reset value only matters for outputs and
-  expressions.
-- Device counter readings: no `stale_timeout`.  A dead meter then leaves
-  the reading and the total valid and frozen, exactly as the hardware
-  register does.  A timeout would not disturb the counter (it ignores
-  invalid dispatches, section 4.8), but the raw name would read
-  `init_value` for everything else that reads it, which is wrong for an
-  energy register sent to an output.  Log and serve the counter total,
-  not the raw reading.  A `stale_timeout` set on the device section also
-  applies to the raw counter readings, so override it with
-  `stale_timeout = 0` on each of them.
+A `stale_timeout` is set where a dead source must change behaviour, not
+everywhere:
+
+- The power sources of a SunSpec meter: a dead meter then answers with
+  exception 4 instead of serving frozen values, which replaces the
+  server's `stale_timeout`.
+- The power sources of counters with `integrate_power`: integration stops
+  instead of counting the last power forever, which replaces `max_gap`.
+- Flags, setpoints and control inputs read by expressions or written to
+  an output, where falling back to `init_value` is the wanted reaction.
+
+Everything else keeps its last value and stays valid, so the logger
+writes that value instead of `null` (section 5).  Device counter readings
+in particular get no `stale_timeout`; a dead meter then leaves the
+reading and the total valid and frozen, exactly as the hardware register
+does.  A timeout there would not disturb the counter (it ignores invalid
+dispatches, section 4.8), but the raw name would read `init_value` for
+everything else that reads it, which is wrong for an energy register sent
+to an output.  Log and serve the counter total, not the raw reading.  A
+`stale_timeout` set on the device section also applies to the raw counter
+readings, so override it with `stale_timeout = 0` on each of them.
 
 ## 2. Current state (what is removed)
 
@@ -110,9 +116,6 @@ last):
 - A value name that no module publishes.  This replaces the runtime
   "never received" warnings of the logger and eval, which mostly caught
   typos.
-- A name read by an MQTT logger or a SunSpec meter whose producer is an
-  input without a `stale_timeout`: it would be logged or served frozen
-  forever.  Eval and counter producers are not checked (see section 5).
 - The power source of a counter with `integrate_power` has no
   `stale_timeout`, if its producer is an input: the last power would be
   integrated forever.  A power produced by an eval is not checked
@@ -297,11 +300,14 @@ Behaviour changes worth stating in the README:
 - An eval's validity only changes when the eval runs.  With explicit
   `triggers` that do not include a value the expressions read, it lags
   behind that value's timeout until the next evaluation.
-- Two gaps are not checked at load time, because catching them would need
-  a walk through the producer graph: a logged or metered value produced by
-  an eval whose own inputs have no `stale_timeout` can be published
-  frozen, and an output can be written with a frozen value forever.  The
-  README says that every input should have a `stale_timeout`.
+- An input without a `stale_timeout` keeps its last value and stays
+  valid, so the logger writes that value and a SunSpec meter serves it,
+  where today the logger's 600 s and the server's 30 s turn it into
+  `null` and exception 4 for every value at once.  Nothing enforces a
+  timeout except the `integrate_power` rule: the configuration decides
+  which values need one, and the rest are logged frozen.  That is
+  accepted, and it is why the SunSpec power sources get a timeout —
+  a dead meter then makes its whole meter unavailable, as today.
 
 ## 6. Testing
 
@@ -329,9 +335,8 @@ Behaviour changes worth stating in the README:
   number and logged as `null`; it becomes valid again with the data.  A
   non-finite result (division by zero) keeps the previous number, is
   logged as `null` and is reported once.
-- Config errors: name without producer, logged value produced by an input
-  without `stale_timeout`, integrating counter power source without one,
-  negative `stale_timeout`, removed options.
+- Config errors: name without producer, integrating counter power source
+  without `stale_timeout`, negative `stale_timeout`, removed options.
 
 ## 7. Plan
 
@@ -358,9 +363,10 @@ One commit each, every step building (steps 1–7 done, see section 9):
    an input without `stale_timeout`, integrating counter power source.
 8. Docs: README (options, inheritance, removed options, consequences) and
    `doc/eval.md`.  Production config (`uvrgw.conf`, untracked):
-   `stale_timeout` per device section, replacing the removed
-   `stale_timeout` of the SunSpec servers and the loggers and the
-   `max_gap` of the integrating counters.
+   `stale_timeout` for the SunSpec power sources and the
+   `integrate_power` sources (e.g. `heater_power_in`), which replace the
+   `stale_timeout` of the SunSpec servers and `max_gap`.  No other value
+   gets one; the removed `stale_timeout` of the loggers is not replaced.
 
 ## 8. Decisions
 
@@ -383,6 +389,10 @@ One commit each, every step building (steps 1–7 done, see section 9):
 - A value is invalid if its own result is not finite, not only if its
   inputs are: the flag answers "we have no number", whatever the
   reason.
+- A `stale_timeout` is configured per value that needs one, not as
+  coverage for everything that is logged.  The logger's global net is
+  gone and is not replaced; a value without a timeout is logged with its
+  last value.
 - No compatibility fallback for removed options; breaking existing
   configs is accepted.
 - Invalid source data (unparsable MQTT payload, `valid_if` failing,
@@ -406,6 +416,13 @@ Rejected alternatives (so they are not discussed again):
   timeout of the values it reads).  The chain runs input → counter → eval,
   so the derivation needs a walk through the producer graph plus trigger
   analysis — the dependency closure that this redesign removes.
+- **A config error for a logged or metered value whose input producer has
+  no `stale_timeout`.**  It was meant to keep a forgotten timeout from
+  going unnoticed, but in a real config nearly every input is logged, so
+  it would demand a timeout almost everywhere and contradict the plan of
+  configuring only the SunSpec and `integrate_power` power sources.  It
+  was implemented in step 7 (`timeout_reader` in `uvrgw_conf.c`, set by
+  `mqtt_logger.c` and `sunspec.c`) and is removed in step 8.
 - **Timeouts on counters and eval values.** Nobody expects a timeout
   anywhere but at an input, and validity already propagates: a reset is a
   dispatch, so it triggers the evals that read the value.
@@ -505,6 +522,10 @@ Step 7 (config checks):
   error: "value 'x' of json '...' has no stale_timeout, but is read by
   mqtt logger 'y'."  A name without producer is reported as "value 'x'
   is not produced by any module." without naming its readers.
+- Step 8 removes the logger and SunSpec part of this check (section 3,
+  section 8): the registrations in `mqtt_logger.c` and `sunspec.c` and,
+  with them, `timeout_reader` and its handling, keeping only the
+  `integrate_power` source registration in `counter.c`.
 
 Interim state until step 8: the README still documents the removed
 options (`stale_timeout` of logger and SunSpec, `max_gap`, `max_age`,
