@@ -138,11 +138,16 @@ watchdog take it; the watchdog re-checks the deadline under it.
 `last_lock` stays for readers (`uvrgw_conf_get_val()`), so slow callbacks
 (MQTT publish) do not block the eval thread, the logger or SunSpec.
 
-Lock order: dispatch mutex before module locks.  Callbacks must not
-dispatch another name synchronously.  The counter holds its own lock
-while dispatching its own name; this is fine since no callback of a
-counter's name leads back into that counter.  Document this in the
-header.
+Nested dispatch is allowed and exists today: the counter dispatches its
+total inside the callback of its source (`counter.c`, `source_update()`),
+holding its own lock.  Locks are therefore taken along the data flow
+(source name → counter lock → counter name → ...).  This cannot deadlock
+as long as the synchronous data flow has no cycle; evals break every
+cycle, because their callbacks only set a flag and evaluation runs in the
+eval thread.  A single global dispatch lock is not an option: the counter
+thread holds the counter lock and dispatches, while a source thread
+holding the global lock calls the counter callback, which waits for the
+counter lock.  Document the rule in the header.
 
 ### 4.4 Inputs
 
@@ -211,7 +216,9 @@ NaN behaviour of the tinyexpr operators, for the README:
 | `!x` | 0 |
 
 So an expression reading a value with `init_value = nan` should check it
-with `isnan()` where the result matters.
+with `isnan()` where the result matters.  A value that reads itself keeps
+NaN once its result was NaN (e.g. `t + dt`, `hyst(h, ...)`), as in any
+other language; the README says so and shows `if(isnan(t), 0, t) + dt`.
 
 ## 5. Testing
 
@@ -250,7 +257,9 @@ One commit each:
 5. Config checks: names without producer, device counter source with
    `timeout` and numeric `init_value`.
 6. Docs: README (options, removed options, NaN table, config advice) and
-   `doc/eval.md`.
+   `doc/eval.md`.  Production config (`uvrgw.conf`, untracked): `timeout`
+   for the SunSpec power sources and the `integrate_power` sources
+   (e.g. `heater_power_in`), which replace `stale_timeout` and `max_gap`.
 
 ## 7. Decisions
 
