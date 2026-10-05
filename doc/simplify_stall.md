@@ -42,8 +42,13 @@ Typical configuration:
 - Temperatures and other measurements: `stale_timeout` as well; the
   logger writes `null`, the reset value only matters for outputs and
   expressions.
-- Device counter readings: no `stale_timeout`.  A dead meter keeps its
-  last reading, exactly as the hardware register does.
+- Device counter readings: no `stale_timeout`.  A dead meter then leaves
+  the reading and the total valid and frozen, exactly as the hardware
+  register does.  A timeout would not disturb the counter (it ignores
+  invalid dispatches, section 4.8), but the raw name would read
+  `init_value` for everything else that reads it, which is wrong for an
+  energy register sent to an output.  Log and serve the counter total,
+  not the raw reading.
 
 ## 2. Current state (what is removed)
 
@@ -52,9 +57,9 @@ Typical configuration:
 | dispatcher (`uvrgw_conf.c`) | stores value + update time + `updated` flag, drops NaN | stores value + valid flag, starts at the producer's `init_value`, owns the timeout watchdog |
 | mqtt_logger | `stale_timeout` (s, default 600), "never received" warning | invalid → `null` |
 | sunspec | `stale_timeout` (ms, default 30000), stale source → exception 4 | invalid source → exception 4 |
-| counter | `max_gap` (ms, default 60000), publish only while power is fresh | publishes every tick; integration follows the source value |
+| counter | `max_gap` (ms, default 60000), publish only while power is fresh | publishes every tick; an invalid dispatch of the source is not data |
 | eval | `max_age`, per-value skipping, per-input stale/never received logging | always computes; validity is the AND of the values read |
-| outputs (Modbus, CAN, MQTT) | no staleness handling | unchanged: they always get the number |
+| outputs (Modbus, CAN, MQTT) | no staleness handling | unchanged behaviour; the callback gains a validity parameter they ignore |
 
 The config options `stale_timeout` (logger, SunSpec), `max_gap` and
 `max_age` are removed without a compatibility fallback: a config still
@@ -88,7 +93,7 @@ modbus_tcp 192.168.1.10 {
     block {
       dir = in
       value grid_power      { reg = 0  type = f32 }
-      value grid_energy_imp { reg = 2  type = f32  stale_timeout = 0 }
+      value grid_energy_imp { reg = 2  type = f32  stale_timeout = 60000 }
     }
   }
 }
@@ -105,9 +110,6 @@ last):
 - A name read by an MQTT logger or a SunSpec meter whose producer is an
   input without a `stale_timeout`: it would be logged or served frozen
   forever.  Eval and counter producers are not checked (see section 5).
-- The source of a device counter (counter without `integrate_power`) has
-  a `stale_timeout`: the reset to `init_value` would read as a counter
-  reset and the next real reading would be counted again.
 - The power source of a counter with `integrate_power` has no
   `stale_timeout`, if its producer is an input: the last power would be
   integrated forever.  A power produced by an eval is not checked; its
@@ -138,15 +140,19 @@ bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f);
   and the timeout.  Producers: inputs pass their `init_value` and
   `stale_timeout`, eval values their `init_value` and 0, counters 0 and
   0.
-- `uvrgw_conf_disp_val()` stores value and validity under `last_lock`,
-  sets `last_data` when `valid` is true, then fires the callbacks as
-  today.  Inputs pass `true`, the watchdog `false`, eval the validity it
-  computed, the counter its own validity.
+- `uvrgw_conf_disp_val()` takes the dispatch mutex (section 4.3), stores
+  value and validity under `last_lock`, sets `last_data` when `valid` is
+  true, then fires the callbacks as today.  Inputs pass `true`, the
+  watchdog `false`, eval the validity it computed, the counter its own
+  validity.
+- The dispatch callback becomes
+  `int (*)(void *v, double f, bool valid)`.  Outputs ignore the flag; the
+  counter uses it to tell data from a reset (section 4.8).
 - `uvrgw_conf_get_val()` always returns the number; the return value says
   whether it is valid.  The `ts` parameter is gone.
-- The existing guard against non-finite values in `uvrgw_conf_disp_val()`
-  stays, so the invariant "a stored value is always a finite number"
-  holds even if a module misses a check.
+- The guard in `uvrgw_conf_disp_val()` is extended from `isnan()` to
+  `isfinite()`, so the invariant "a stored value is always a finite
+  number" holds even if a module misses a check.
 - Start values are not dispatched; outputs only receive real data, a
   computed value or a reset by the watchdog.
 
@@ -154,27 +160,52 @@ bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f);
 
 One thread for all names with `stale_timeout > 0`.  It wakes once per
 second (the timeouts are seconds to minutes; no deadline scheduling).
-For each such name, under `last_lock`: if `valid` and
-`now - last_data >= stale_timeout`, set `last_value = init_value` and
-`valid = false`.  The lock is released, then the reset is dispatched once
-with the producer's `val` as source.  Only valid names can expire, so a
-reset is never repeated.
 
-Each reset is logged once ("value 'x' timed out, reset to <init_value>")
-and the next real data once ("value 'x' received again").  This replaces
-the per-consumer stale logging of logger, SunSpec and eval.
+Each such name has an armed deadline: armed at startup and on every
+dispatch of real data (`last_data + stale_timeout`), and cleared once the
+reset has been dispatched.  A name that never delivers is therefore reset
+once at `stale_timeout` after startup, exactly like one that stops later,
+and a reset is never repeated without new data.  Testing `valid` instead
+would leave a never-received input unreset, unlogged, and its outputs
+unwritten, because start values are not dispatched either.
+
+For an expired name the watchdog sets `last_value = init_value` and
+`valid = false` and dispatches the reset once with the producer's `val`
+as source (locking: section 4.3).
+
+The reset is logged once — "value 'x' timed out, reset to <init_value>",
+or "value 'x' never received, set to <init_value>" if no data arrived at
+all — and the next real data once ("value 'x' received again").  This
+replaces the per-consumer stale logging of logger, SunSpec and eval.
 
 ### 4.3 Locking
 
 The watchdog is the first dispatcher of a name that is not the name's
-producer, so a reset and real data can happen at the same moment.  The
-lock is not held across the callbacks (the counter already dispatches its
-total from two threads under its own lock; a lock held across callbacks
-would deadlock against that).  The resulting lost update is accepted and
-documented: a reset may overwrite data that arrived in the same instant,
-or the other way round.  The next data corrects it, and no consumer is
-damaged by one stray value — device counters are the only consumer that
-could be, and their sources may not have a `stale_timeout` (section 3).
+producer, so a reset and real data can meet.  Storing the value and
+firing the callbacks must therefore be atomic per name.  Otherwise the
+watchdog's callbacks can run after those of newer real data, leaving the
+outputs and the counter at `init_value` while the stored value says the
+real number is valid — a mismatch that lasts until the next data, which
+is minutes for exactly the slow sources where the race is likely.
+
+Each dispatcher therefore gets a dispatch mutex, held from storing the
+value until all callbacks have returned.  Both `uvrgw_conf_disp_val()`
+and the watchdog take it, and the watchdog re-checks the deadline under
+it.  `last_lock` stays for the readers (`uvrgw_conf_get_val()`), so a
+slow callback (an MQTT publish) does not block the eval thread, the
+logger or SunSpec.
+
+Nested dispatch is allowed and exists today: the counter dispatches its
+total inside the callback of its source (`counter.c`, `source_update()`),
+holding its own lock.  Locks are therefore taken along the data flow
+(source name → counter lock → counter name → ...), always in that order,
+so they cannot deadlock as long as the synchronous data flow has no
+cycle; evals break every cycle, because their callbacks only set a flag
+and evaluation runs in the eval thread.  A single global dispatch lock is
+the one variant that does deadlock: the counter thread holds the counter
+lock and dispatches, while a source thread holding the global lock calls
+the counter callback and waits for the counter lock.  Document the rule
+in the header.
 
 ### 4.4 Inputs
 
@@ -186,10 +217,10 @@ non-finite floats) so they count as no data.
 
 ### 4.5 Outputs
 
-Unchanged.  Modbus, CAN and MQTT outputs always write the number they are
-given, whether it is valid or not: a timeout reset is how a dead source
-reaches the controller as `init_value`.  A fallback value at an output is
-configured as `init_value` on the input.
+Behaviour unchanged.  Modbus, CAN and MQTT outputs always write the
+number they are given and ignore the validity parameter: a timeout reset
+is how a dead source reaches the controller as `init_value`.  A fallback
+value at an output is configured as `init_value` on the input.
 
 ### 4.6 MQTT logger
 
@@ -213,24 +244,32 @@ invalid source.
   with that validity.  A counter disabled by an unreadable state file
   never dispatches and stays invalid, so the logger writes `null` and a
   SunSpec meter answers with exception 4.
-- Device counter: unchanged.  A source that stops delivering keeps its
-  last reading (no `stale_timeout` allowed, section 3), so the total
-  stays valid and frozen, like the register in the device.
+- An invalid dispatch of the source is not data, in both modes.  A device
+  counter takes no reading, so no reset is detected and the total stays
+  valid and frozen, like the register in the device; the next real
+  reading continues without a step.  A `stale_timeout` on a counter
+  source is therefore harmless and no config error, although section 1
+  advises against one.
 - Power integration: `max_gap` and `power_fresh()` are removed.  Each
   power value is integrated until the next one arrives and the total is
-  published every tick.  A dead source with `stale_timeout` falls back to
-  0 W, which stops integration; without one the last power is integrated
-  forever, as configured.
+  published every tick.  An invalid power stops integration, so the reset
+  value of the source does not matter.  A power source that is an input
+  needs a `stale_timeout` (section 3); a power produced by an eval has
+  none, and the last computed power is integrated until the eval runs
+  again.
 
 ### 4.9 Eval
 
 - Every value is evaluated and published on every evaluation; there is no
-  skipping.  A value's validity is the AND of the validity of all outside
-  values it reads, using the existing input closure (`v->ins`, which
-  already covers values read through other values of the same eval).  The
-  number is published either way.
-- A non-finite result is not published, the previous value and validity
-  are kept, and the problem is logged once, as today.
+  skipping.  The number is dispatched either way, so an invalid input
+  never stops a value from being published.
+- A value is valid if all outside values it reads are valid *and* its
+  result is finite.  The validity of the values read comes from the
+  existing input closure (`v->ins`, which already covers values read
+  through other values of the same eval).  A non-finite result leaves the
+  number unchanged and is dispatched as invalid, so a broken expression is
+  logged as `null` instead of as a frozen number, exactly like a value
+  whose inputs died; it is logged once, as today.
 - `init` is renamed to `init_value`, matching the inputs (eval is not
   released yet, so no compatibility issue).
 - Removed: `max_age`, per-value skipping (`v->updated`, `v->deps`), the
@@ -252,6 +291,9 @@ Behaviour changes worth stating in the README:
   `init_value`s of inputs that have not delivered yet.  Today nothing is
   published until all inputs exist.  An eval feeding an output therefore
   needs sensible `init_value`s on its inputs.
+- An eval's validity only changes when the eval runs.  With explicit
+  `triggers` that do not include a value the expressions read, it lags
+  behind that value's timeout until the next evaluation.
 - Two gaps are not checked at load time, because catching them would need
   a walk through the producer graph: a logged or metered value produced by
   an eval whose own inputs have no `stale_timeout` can be published
@@ -271,17 +313,22 @@ Behaviour changes worth stating in the README:
 - Inheritance: section value used, per-value override wins, `0` in a value
   overriding a section timeout.
 - Race: real data and a timeout at the same moment (short timeout, data at
-  the interval boundary); the next data corrects the value.
+  the interval boundary); the stored value, the outputs and the counter
+  all end at the same value.
 - Loopback: a name that is an MQTT input on one connection and an output
   on another; the reset is not sent back to the input's topic.
 - Power counter with a timeout on the source: integration stops after the
   timeout, the total keeps being published and stays valid.
+- Device counter with a timeout on the source: the total stays valid and
+  frozen, no reset is detected, and the next real reading continues
+  without a step.
 - Eval: a value reading two inputs, one of them invalid, is published as a
-  number and logged as `null`; it becomes valid again with the data.
+  number and logged as `null`; it becomes valid again with the data.  A
+  non-finite result (division by zero) keeps the previous number, is
+  logged as `null` and is reported once.
 - Config errors: name without producer, logged value produced by an input
-  without `stale_timeout`, device counter source with `stale_timeout`,
-  integrating counter power source without one, negative `stale_timeout`,
-  removed options.
+  without `stale_timeout`, integrating counter power source without one,
+  negative `stale_timeout`, removed options.
 
 ## 7. Plan
 
@@ -289,21 +336,23 @@ One commit each, every step building:
 
 1. Dispatcher: `valid` flag, `init_value`/`stale_timeout`/producer `val`
    in `uvrgw_conf_set_producer()`, validity parameter on
-   `uvrgw_conf_disp_val()`, `uvrgw_conf_get_val()` always returning the
-   number.  All modules adapted mechanically; their own staleness checks
-   stay for now.
+   `uvrgw_conf_disp_val()` and on the dispatch callback,
+   `uvrgw_conf_get_val()` always returning the number, dispatch mutex.
+   All modules adapted mechanically; their own staleness checks and the
+   `ts` parameter stay until step 6.
 2. Inputs: `init_value` and `stale_timeout` for MQTT, JSON, Modbus and
    CAN, with device section inheritance; inputs drop invalid readings
    themselves.
 3. Watchdog thread and timeout logging.
 4. Consumers: logger (`null` when invalid, `stale_timeout` removed),
    SunSpec (exception 4 when invalid, `stale_timeout` removed), counter
-   (`max_gap` removed, own validity).
+   (`max_gap` removed, own validity, invalid dispatch is not data).
 5. Eval: validity as the AND over the input closure; `max_age`, skipping
    and per-input logging removed; `init` renamed to `init_value`.
-6. Dispatcher cleanup: `last_update`/`updated` remnants removed.
+6. Dispatcher cleanup: `last_update` and `updated` remnants and the `ts`
+   parameter of `uvrgw_conf_get_val()` removed.
 7. Config checks: name without producer, logged/metered value produced by
-   an input without `stale_timeout`, counter source rules.
+   an input without `stale_timeout`, integrating counter power source.
 8. Docs: README (options, inheritance, removed options, consequences) and
    `doc/eval.md`.  Production config (`uvrgw.conf`, untracked):
    `stale_timeout` per device section, replacing the removed
@@ -323,6 +372,14 @@ One commit each, every step building:
   set per device section and overridden per value.
 - A timeout resets the value *and* clears the flag, so one option serves
   all consumers: the controller sees 0 W, PostgreSQL sees `null`.
+- The dispatch callback gains a validity parameter.  Outputs ignore it;
+  the counter uses it to tell data from a reset, so a `stale_timeout` on
+  a counter source is harmless instead of a config error.  The advice
+  stays to leave it off and to log the total instead of the raw reading
+  (section 1).
+- A value is invalid if its own result is not finite, not only if its
+  inputs are: the flag answers "we have no number", whatever the
+  reason.
 - No compatibility fallback for removed options; breaking existing
   configs is accepted.
 - Invalid source data (unparsable MQTT payload, `valid_if` failing,
@@ -349,3 +406,8 @@ Rejected alternatives (so they are not discussed again):
 - **Timeouts on counters and eval values.** Nobody expects a timeout
   anywhere but at an input, and validity already propagates: a reset is a
   dispatch, so it triggers the evals that read the value.
+- **Accepting a lost update instead of a dispatch mutex per name.**  The
+  outputs and the counter would be left at `init_value` while the stored
+  value is valid real data, for as long as the source's interval.  Only a
+  single global dispatch lock deadlocks against the counter; a mutex per
+  name is taken along the data flow and cannot (section 4.3).
