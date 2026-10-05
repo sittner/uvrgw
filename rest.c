@@ -27,6 +27,7 @@
 #include <json-c/json.h>
 #include <curl/curl.h>
 #include <ctype.h>
+#include <math.h>
 
 #define CONN_THREAD_PERIOD_US 100000
 
@@ -84,6 +85,8 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
   conn->user = uvrgw_conf_strdup(cfg_getstr(cfg, "user"));
   conn->pwd = uvrgw_conf_strdup(cfg_getstr(cfg, "pwd"));
   conn->valid_if = uvrgw_conf_strdup(cfg_getstr(cfg, "valid_if"));
+  conn->init_value = cfg_getfloat(cfg, "init_value");
+  conn->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (conn->url == NULL) {
     syslog(LOG_ERR, "json url name not given.");
@@ -95,6 +98,8 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
 
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   REST_VAL_T *val = (REST_VAL_T *) child;
+  double init_value;
+  int stale_timeout;
 
   val->conn = (REST_CONN_T *) ctx;
 
@@ -102,6 +107,19 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->path = uvrgw_conf_strdup(cfg_getstr(cfg, "path"));
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
+
+  // input timeout options: value setting, else section setting
+  if (cfg_size(cfg, "init_value") > 0) {
+    init_value = cfg_getfloat(cfg, "init_value");
+  } else {
+    init_value = val->conn->init_value;
+  }
+
+  if (cfg_size(cfg, "stale_timeout") > 0) {
+    stale_timeout = cfg_getint(cfg, "stale_timeout");
+  } else {
+    stale_timeout = val->conn->stale_timeout;
+  }
 
   if (val->path == NULL) {
     syslog(LOG_ERR, "json value path not given.");
@@ -113,7 +131,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (uvrgw_conf_set_producer(val->disp, "json", val->conn->url, val, 0.0, 0) < 0) {
+  if (uvrgw_conf_set_producer(val->disp, "json", val->conn->url, val, init_value, stale_timeout) < 0) {
     return -1;
   }
 
@@ -274,6 +292,11 @@ static int conn_task(REST_CONN_T *conn) {
       default:
         syslog(LOG_WARNING, "Invalid value type %d of '%s' for url '%s'.", type, val->path, conn->url);
         continue;
+    }
+
+    // drop non-finite values (no data)
+    if (!isfinite(f)) {
+      continue;
     }
 
     // dispatch value

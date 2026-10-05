@@ -58,6 +58,8 @@ static cfg_opt_t mqtt_val_opts[] = {
   CFG_STR("fmt", NULL, CFGF_NONE),
   CFG_INT("qos", 0, CFGF_NODEFAULT),
   CFG_BOOL("retain", cfg_false, CFGF_NODEFAULT),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -86,6 +88,8 @@ static cfg_opt_t mqtt_opts[] = {
   CFG_INT("keepalive_period", 300, CFGF_NONE),
   CFG_INT("qos", 0, CFGF_NONE),
   CFG_BOOL("retain", cfg_false, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_SEC("logger", mqtt_logger_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
@@ -95,6 +99,8 @@ static cfg_opt_t json_val_opts[] = {
   CFG_STR("path", NULL, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -105,6 +111,8 @@ static cfg_opt_t json_opts[] = {
   CFG_STR("user", NULL, CFGF_NONE),
   CFG_STR("pwd", NULL, CFGF_NONE),
   CFG_STR("valid_if", NULL, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -114,6 +122,8 @@ static cfg_opt_t can_frame_val_opts[] = {
   CFG_INT("pos", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -128,6 +138,8 @@ static cfg_opt_t can_opts[] = {
   CFG_STR("interface", NULL, CFGF_NONE),
   CFG_INT("timestamp_period", 0, CFGF_NONE),
   CFG_INT("send_timeout", 1000, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("frame", can_frame_opts, CFGF_MULTI),
   CFG_END()
 };
@@ -140,6 +152,8 @@ static cfg_opt_t mb_block_val_opts[] = {
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
   CFG_STR("scale_factor", NULL, CFGF_NONE),
   CFG_BOOL("word_swap", cfg_false, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -158,6 +172,8 @@ static cfg_opt_t mb_block_opts[] = {
 static cfg_opt_t mb_slave_opts[] = {
   CFG_INT("id", -1, CFGF_NONE),
   CFG_INT("interval", 0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("block", mb_block_opts, CFGF_MULTI),
   CFG_END()
 };
@@ -685,6 +701,18 @@ int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, c
 
   if (dp->producer != NULL) {
     syslog(LOG_ERR, "value '%s' of %s is already produced by %s.", dp->name, owner, dp->producer);
+    free(owner);
+    return -1;
+  }
+
+  if (!isfinite(init_value)) {
+    syslog(LOG_ERR, "value '%s' of %s: init_value invalid.", dp->name, owner);
+    free(owner);
+    return -1;
+  }
+
+  if (stale_timeout < 0) {
+    syslog(LOG_ERR, "value '%s' of %s: stale_timeout invalid.", dp->name, owner);
     free(owner);
     return -1;
   }

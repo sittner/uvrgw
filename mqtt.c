@@ -167,6 +167,8 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
   conn->keepalive_period = cfg_getint(cfg, "keepalive_period");
   conn->qos = cfg_getint(cfg, "qos");
   conn->retain = cfg_getbool(cfg, "retain");
+  conn->init_value = cfg_getfloat(cfg, "init_value");
+  conn->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (conn->host == NULL) {
     syslog(LOG_ERR, "mqtt host name not given.");
@@ -225,6 +227,8 @@ static int check_fmt(const char *fmt) {
 
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) child;
+  double init_value;
+  int stale_timeout;
 
   val->conn = (MQTT_CONN_T *) ctx;
 
@@ -244,6 +248,19 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     val->retain = cfg_getbool(cfg, "retain");
   } else {
     val->retain = val->conn->retain;
+  }
+
+  // input timeout options: value setting, else section setting
+  if (cfg_size(cfg, "init_value") > 0) {
+    init_value = cfg_getfloat(cfg, "init_value");
+  } else {
+    init_value = val->conn->init_value;
+  }
+
+  if (cfg_size(cfg, "stale_timeout") > 0) {
+    stale_timeout = cfg_getint(cfg, "stale_timeout");
+  } else {
+    stale_timeout = val->conn->stale_timeout;
   }
 
   if (val->topic == NULL) {
@@ -266,7 +283,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host, val, 0.0, 0) < 0) {
+  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host, val, init_value, stale_timeout) < 0) {
     return -1;
   }
 

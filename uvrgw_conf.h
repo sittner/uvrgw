@@ -238,7 +238,8 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
  * @param init_value     Value before the first data and after a timeout.
  * @param stale_timeout  Max. time (ms) without data before the value is
  *                       reset to @p init_value; 0 = never.
- * @return               0 on success, -1 if the name already has a producer.
+ * @return               0 on success, -1 if the name already has a producer
+ *                       or @p init_value / @p stale_timeout is invalid.
  */
 int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance,
                             void *val, double init_value, int stale_timeout);

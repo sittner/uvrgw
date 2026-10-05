@@ -149,6 +149,8 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
 
   slave->id = cfg_getint(cfg, "id");
   slave->interval = cfg_getint(cfg, "interval");
+  slave->init_value = cfg_getfloat(cfg, "init_value");
+  slave->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (slave->id < 0 || slave->id > 255) {
     syslog(LOG_ERR, "modbus slave id not given or invalid.");
@@ -306,6 +308,8 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_VAL_T *val = (MB_SLAVE_VAL_T *) child;
   MB_MASTER_T *master;
   bool bit_block;
+  double init_value;
+  int stale_timeout;
   int ret;
 
   val->block = (MB_BLOCK_T *) ctx;
@@ -318,6 +322,19 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
   val->word_swap = cfg_getbool(cfg, "word_swap");
+
+  // input timeout options: value setting, else section setting
+  if (cfg_size(cfg, "init_value") > 0) {
+    init_value = cfg_getfloat(cfg, "init_value");
+  } else {
+    init_value = val->block->slave->init_value;
+  }
+
+  if (cfg_size(cfg, "stale_timeout") > 0) {
+    stale_timeout = cfg_getint(cfg, "stale_timeout");
+  } else {
+    stale_timeout = val->block->slave->stale_timeout;
+  }
 
   // check value type against block register type
   if (val->type < 0) {
@@ -370,9 +387,9 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   if (val->block->dir == UVRGW_CONF_VAL_DIR_IN) {
     master = val->block->slave->master;
     if (master->tcp) {
-      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip, val, 0.0, 0);
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_tcp", ((MB_TCP_MASTER_T *) master)->ip, val, init_value, stale_timeout);
     } else {
-      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface, val, 0.0, 0);
+      ret = uvrgw_conf_set_producer(val->disp, "modbus_rtu", ((MB_RTU_MASTER_T *) master)->interface, val, init_value, stale_timeout);
     }
     if (ret < 0) {
       return -1;
@@ -907,7 +924,7 @@ static int read_block_registers(MB_BLOCK_T *blk) {
  * @param val   Value descriptor.
  * @param regs  Raw registers of the value.
  * @return      true if the raw value is the "not implemented" marker of its
- *              type (f32 NaN is dropped by the dispatcher anyway).
+ *              type (f32 NaN is dropped by dispatch_value() anyway).
  */
 static bool sunspec_is_na(const MB_SLAVE_VAL_T *val, const uint16_t *regs) {
   switch (val->type) {
@@ -930,14 +947,15 @@ static bool sunspec_is_na(const MB_SLAVE_VAL_T *val, const uint16_t *regs) {
  *
  * Applies the scale factor @p sf, the value's own @c scale and @c offset
  * for numeric types.  For bitmask values, extracts the configured bit.
- * A float NaN ("not implemented" in SunSpec) is dropped by the dispatcher.
+ * Non-finite results (a float NaN is "not implemented" in SunSpec) are
+ * dropped, so they count as no data.
  *
  * @param dpval  Value descriptor.
  * @param regs   Raw registers of the value (1 or 2, see value_reg_count()).
  * @param sf     Scale-factor multiplier (1.0 if no scale-factor register).
  */
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double sf) {
-  double raw;
+  double raw, f;
   uint32_t u32;
   float f32;
 
@@ -966,7 +984,12 @@ static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double s
       return;
   }
 
-  uvrgw_conf_disp_val(dpval->disp, dpval, raw * sf * dpval->scale + dpval->offset, true);
+  f = raw * sf * dpval->scale + dpval->offset;
+  if (!isfinite(f)) {
+    return;
+  }
+
+  uvrgw_conf_disp_val(dpval->disp, dpval, f, true);
 }
 
 /**
