@@ -316,7 +316,7 @@ static char *build_json(MQTT_LOGGER_T *logger, time_t t) {
   len = snprintf(json, size, "{\"time\":%lld", (long long) t);
 
   for (val = logger->values, val_idx = 0; val_idx < logger->values_count; val++, val_idx++) {
-    valid = uvrgw_conf_get_val(val->disp, &f, NULL);
+    valid = uvrgw_conf_get_val(val->disp, &f);
     f *= val->scale;
 
     if (valid && isfinite(f)) {
