@@ -55,6 +55,25 @@ sudo make install
 
 ---
 
+## Testing
+
+```bash
+make test
+```
+
+The test suite (`test/`, Python 3 standard library only) runs the built binary against local fakes of every device type: a mosquitto broker, a JSON HTTP server, Modbus TCP and Modbus RTU (on a pty) devices, CAN on a `vcan0` interface and Modbus TCP reads of the SunSpec meters.  It covers the config checks, `stale_timeout` / `init_value` inheritance of all input sections, timeouts and recovery of every input type, the consumers (logger, SunSpec, counters, eval), outputs, MQTT loopback and resets racing with real data.  If `uvrgw.conf` exists in the source directory, it is loaded and run as well, with all connections redirected to the local fakes.
+
+Requirements: `gcc`, `python3`, `mosquitto` (the broker binary, not running as a service is fine), `valgrind` for `--valgrind`, and for the CAN tests a virtual CAN interface (skipped without it):
+
+```bash
+sudo ip link add vcan0 type vcan
+sudo ip link set vcan0 up
+```
+
+Options (`python3 test/run.py --help`): `--valgrind` runs uvrgw under valgrind (memory errors and leaks fail the test), `--slow` runs the race test for 5 minutes instead of 30 s, `-k PATTERN` selects tests by name, and a binary path can be given instead of `./uvrgw`.  The logs of all uvrgw runs are kept in the printed temp directory if a test fails.
+
+---
+
 ## Running as service
 
 The systemd unit runs uvrgw as unprivileged user `uvrgw` (group `dialout` for the Modbus RTU serial port) and grants `CAP_NET_BIND_SERVICE`, so the SunSpec meter emulation can listen on port 502.  systemd creates the state directory `/var/lib/uvrgw` (`StateDirectory=`) for the counter states.  The configuration file contains credentials, so make it readable for the service user only:
