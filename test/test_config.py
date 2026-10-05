@@ -108,6 +108,65 @@ def test_config_errors():
     assert re.search(r"value 't' of eval 'e' is already produced by json", errs[0]), errs
 
 
+def test_config_checks():
+    """Missing or invalid options are refused, naming the section or value."""
+    def tcp(slave):
+        return 'modbus_tcp {\n  ip = "127.0.0.1"\n  slave {\n    %s\n  }\n}\n' % slave
+
+    def block(val, head='dir = out  regtype = reg  addr = 0  count = 1'):
+        return 'id = 1\n    interval = 1000\n    block { %s  %s }' % (head, val)
+
+    def frame(body):
+        return 'can {\n  interface = "vcan0"\n  frame {\n    %s\n  }\n}\n' % body
+
+    cases = [
+        (MQTT % 'value t { type = number  topic = "o"  fmt = "%.1f" }', r"mqtt value 't': dir not given\."),
+        (MQTT % 'value t { dir = out  topic = "o" }', r"mqtt value 't': type not given\."),
+        (MQTT % 'value t { dir = out  type = switch }', r"mqtt value 't': topic not given\."),
+        (MQTT % 'value t { dir = out  type = switch  topic = "o"  qos = 3 }', r"mqtt value 't': qos invalid\."),
+        (MQTT % 'qos = 3', r"mqtt '127\.0\.0\.1': qos invalid\."),
+        (frame('dir = out\n    value t { type = u8  pos = 0 }'), r"can 'vcan0': frame can_id not given or invalid"),
+        (frame('can_id = 0x800\n    dir = out\n    value t { type = u8  pos = 0 }'), r"can 'vcan0': frame can_id not given or invalid"),
+        (frame('can_id = 0x123\n    value t { type = u8  pos = 0 }'), r"can 'vcan0': frame 0x123: dir not given\."),
+        (frame('can_id = 0x123\n    dir = out\n    value t { type = u8  pos = 0  scale = 0 }'), r"CAN value 't': scale of an output must not be 0\."),
+        (frame('can_id = "ANA:64:0"\n    dir = out\n    value t { type = u8  pos = 0 }'), r"Failed to parse config file"),
+        (frame('can_id = "ANA:1:32"\n    dir = out\n    value t { type = u8  pos = 0 }'), r"Failed to parse config file"),
+        (frame('can_id = "ANA:1:5"\n    dir = out\n    value t { type = u8  pos = 0 }'), r"Failed to parse config file"),
+        (frame('can_id = "DIG:64"\n    dir = out\n    value t { type = bit  pos = 0 }'), r"Failed to parse config file"),
+        (JSON.replace('interval = 1000', 'timeout = 0'), r"json '.*': timeout invalid\."),
+        (tcp(block('value t { reg = 0  type = s16  scale = 0 }')), r"modbus value 't': scale of an output must not be 0\."),
+        (tcp(block('value t { reg = 0  type = s16 }', 'dir = out  addr = 7  count = 1')), r"modbus slave 1 block \(addr 7\): regtype not given\."),
+        (tcp(block('value t { reg = 0  type = s16 }').replace('id = 1', 'id = 248')), r"modbus slave id 248 not given or invalid\."),
+        ('modbus_rtu {\n  interface = "/dev/null"\n  slave {\n    %s\n  }\n}\n' % block('value t { reg = 0  type = s16 }').replace('id = 1', 'id = 0'),
+         r"modbus slave id 0 not given or invalid\."),
+    ]
+    for conf, pattern in cases:
+        errs = load(JSON + conf)
+        assert re.search(pattern, errs[0]), (conf, errs)
+
+
+def test_duplicate_titles():
+    """A title used twice in one section is refused instead of merged."""
+    cases = [
+        JSON.replace('value t { path = "t" }', 'value t { path = "t" }\n  value t { path = "u" }'),
+        JSON + MQTT % 'value t { dir = out  type = switch  topic = "a" }\n  value t { dir = out  type = switch  topic = "b" }',
+        JSON + 'counter c { source = t }\ncounter c { source = p  integrate_power = true }\n',
+        JSON + meter().replace('meter m {', 'meter m {\n    unit_id = 2\n  }\n  meter m {'),
+        JSON + 'can {\n  interface = "vcan0"\n  frame {\n    can_id = 0x123\n    dir = out\n    value t { type = u8  pos = 0 }\n    value t { type = u8  pos = 1 }\n  }\n}\n',
+        JSON + 'modbus_tcp {\n  ip = "127.0.0.1"\n  slave {\n    id = 1\n    interval = 1000\n    block {\n      dir = out  regtype = reg  addr = 0  count = 2\n'
+               '      value t { reg = 0  type = s16 }\n      value t { reg = 1  type = s16 }\n    }\n  }\n}\n',
+    ]
+    for c in cases:
+        errs = load(c)
+        assert errs and errs[0].startswith('Failed to parse config file'), (c, errs)
+
+    # the same output name in different blocks is no duplicate
+    errs = load(JSON + 'modbus_tcp {\n  ip = "127.0.0.1"\n  port = 1\n  slave {\n    id = 1\n    interval = 1000\n'
+                '    block { dir = out  regtype = reg  addr = 0  count = 1  value t { reg = 0  type = s16 } }\n'
+                '    block { dir = out  regtype = reg  addr = 5  count = 1  value t { reg = 0  type = s16 } }\n  }\n}\n')
+    assert errs == [], errs
+
+
 def test_removed_options():
     """Removed options fail to load (libconfuse: unknown option)."""
     cases = [

@@ -102,7 +102,7 @@ typedef struct MB_BLOCK {
  * @brief A Modbus slave device attached to a master.
  */
 typedef struct MB_SLAVE {
-  int id;                    /**< Modbus slave address (1–247). */
+  int id;                    /**< Modbus slave address (1–247; TCP also 0 and 255). */
   int interval;              /**< Polling interval in ms (> 0); also the pause after a failed write. */
   double init_value;         /**< Default @c init_value for all input values of this slave. */
   int stale_timeout;         /**< Default @c stale_timeout (ms) for all input values of this slave; 0 = never. */

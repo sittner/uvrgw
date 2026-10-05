@@ -188,7 +188,7 @@ static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
   iface->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (iface->interface == NULL) {
-    syslog(LOG_ERR, "CAN inteface name not given.");
+    syslog(LOG_ERR, "CAN interface name not given.");
     return -1;
   }
 
@@ -215,6 +215,16 @@ static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
 
   frame->can_id = cfg_getint(cfg, "can_id");
   frame->dir = cfg_getint(cfg, "dir");
+
+  if (frame->can_id < 0 || frame->can_id > (int) CAN_SFF_MASK) {
+    syslog(LOG_ERR, "can '%s': frame can_id not given or invalid (0 ... 0x7ff).", frame->iface->interface);
+    return -1;
+  }
+
+  if (frame->dir < 0) {
+    syslog(LOG_ERR, "can '%s': frame 0x%x: dir not given.", frame->iface->interface, frame->can_id);
+    return -1;
+  }
 
   frame->send_buf.can_id = frame->can_id;
   frame->send_buf.can_dlc = 8;
@@ -297,6 +307,12 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     default:
       syslog(LOG_ERR, "CAN value '%s' has invalid type.", val->name);
       return -1;
+  }
+
+  // outputs divide by scale
+  if (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT && val->scale == 0.0) {
+    syslog(LOG_ERR, "CAN value '%s': scale of an output must not be 0.", val->name);
+    return -1;
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT));
@@ -405,7 +421,7 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
 
   for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
     // check for CAN input mapping
-    if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_IN)) {
+    if (frame->dir != UVRGW_CONF_VAL_DIR_IN) {
       continue;
     }
 
@@ -500,7 +516,7 @@ static int iface_task(CAN_IFACE_T *iface) {
 
   // check for pending send frames
   for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
-    if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_OUT)) {
+    if (frame->dir != UVRGW_CONF_VAL_DIR_OUT) {
       continue;
     }
 
@@ -581,11 +597,6 @@ static int send_value(void *v, double f, bool valid) {
   CAN_VAL_T *val = (CAN_VAL_T *) v;
   CAN_FRAME_T *frame = val->frame;
   uint8_t *p;
-
-  // check for valid CAN id
-  if (frame->can_id < 0) {
-    return 0;
-  }
 
   now = utl_get_ticks();
 

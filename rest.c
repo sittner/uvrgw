@@ -99,6 +99,11 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (conn->timeout <= 0) {
+    syslog(LOG_ERR, "json '%s': timeout invalid.", conn->url);
+    return -1;
+  }
+
   return uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(REST_VAL_T), conn, value_configure);
 }
 
@@ -128,7 +133,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   }
 
   if (val->path == NULL) {
-    syslog(LOG_ERR, "json value path not given.");
+    syslog(LOG_ERR, "json value '%s': path not given.", val->name);
     return -1;
   }
 

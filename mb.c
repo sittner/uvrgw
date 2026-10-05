@@ -111,7 +111,7 @@ static int master_rtu_configure(cfg_t *cfg, void *ctx, void *child) {
   master->rts_delay = cfg_getint(cfg, "rts_delay");
 
   if (master->interface == NULL) {
-    syslog(LOG_ERR, "modbus_rtu inteface name not given.");
+    syslog(LOG_ERR, "modbus_rtu interface name not given.");
     return -1;
   }
 
@@ -144,6 +144,7 @@ static int master_configure(cfg_t *cfg, MB_MASTER_T *master) {
 
 static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_T *slave = (MB_SLAVE_T *) child;
+  bool id_valid;
 
   slave->master = (MB_MASTER_T *) ctx;
 
@@ -152,8 +153,14 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   slave->init_value = cfg_getfloat(cfg, "init_value");
   slave->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
-  if (slave->id < 0 || slave->id > 255) {
-    syslog(LOG_ERR, "modbus slave id not given or invalid.");
+  // 1 ... 247; TCP also 0 and 255 (the device itself), RTU 0 is broadcast
+  if (slave->master->tcp) {
+    id_valid = (slave->id >= 0 && slave->id <= 247) || slave->id == MODBUS_TCP_SLAVE;
+  } else {
+    id_valid = (slave->id >= 1 && slave->id <= 247);
+  }
+  if (!id_valid) {
+    syslog(LOG_ERR, "modbus slave id %d not given or invalid.", slave->id);
     return -1;
   }
 
@@ -180,59 +187,59 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
   blk->expect_reg = cfg_getint(cfg, "expect_reg");
   blk->expect_value = cfg_getint(cfg, "expect_value");
 
+  if (blk->addr < 0) {
+    syslog(LOG_ERR, "modbus slave %d: block addr not given.", slave->id);
+    return -1;
+  }
+
   if (blk->dir < 0) {
-    syslog(LOG_ERR, "modbus block dir not given.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): dir not given.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->regtype < 0) {
-    syslog(LOG_ERR, "modbus block regtype not given.");
-    return -1;
-  }
-
-  if (blk->addr < 0) {
-    syslog(LOG_ERR, "modbus block addr not given.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): regtype not given.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->count <= 0) {
-    syslog(LOG_ERR, "modbus block count not given or invalid.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): count not given or invalid.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->dir == UVRGW_CONF_VAL_DIR_OUT &&
       (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INREG)) {
-    syslog(LOG_ERR, "modbus output block must not use read-only regtype inbit/inreg.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): output block must not use read-only regtype inbit/inreg.", slave->id, blk->addr);
     return -1;
   }
 
   // checks are only possible on input register blocks
   if ((blk->sunspec_na || blk->expect_reg >= 0 || blk->expect_value >= 0) &&
       (blk->dir != UVRGW_CONF_VAL_DIR_IN || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT)) {
-    syslog(LOG_ERR, "modbus block: sunspec_na and expect_reg/expect_value are only allowed for input register blocks.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): sunspec_na and expect_reg/expect_value are only allowed for input register blocks.", slave->id, blk->addr);
     return -1;
   }
 
   if ((blk->expect_reg >= 0) != (blk->expect_value >= 0)) {
-    syslog(LOG_ERR, "modbus block: expect_reg and expect_value must be given together.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): expect_reg and expect_value must be given together.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->expect_reg >= blk->count || blk->expect_value > 0xffff) {
-    syslog(LOG_ERR, "modbus block: expect_reg %d / expect_value %d out of range.", blk->expect_reg, blk->expect_value);
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): expect_reg %d / expect_value %d out of range.", slave->id, blk->addr, blk->expect_reg, blk->expect_value);
     return -1;
   }
 
   if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
     int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_BITS : MODBUS_MAX_WRITE_BITS;
     if (blk->count > max_count) {
-      syslog(LOG_ERR, "modbus block count %d exceeds maximum %d for bit registers.", blk->count, max_count);
+      syslog(LOG_ERR, "modbus slave %d block (addr %d): count %d exceeds maximum %d for bit registers.", slave->id, blk->addr, blk->count, max_count);
       return -1;
     }
   } else {
     int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_REGISTERS : MODBUS_MAX_WRITE_REGISTERS;
     if (blk->count > max_count) {
-      syslog(LOG_ERR, "modbus block count %d exceeds maximum %d for registers.", blk->count, max_count);
+      syslog(LOG_ERR, "modbus slave %d block (addr %d): count %d exceeds maximum %d for registers.", slave->id, blk->addr, blk->count, max_count);
       return -1;
     }
   }
@@ -382,6 +389,12 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
       syslog(LOG_ERR, "modbus value '%s': scale_factor is only allowed for integer values.", val->name);
       return -1;
     }
+  }
+
+  // outputs divide by scale
+  if (val->block->dir == UVRGW_CONF_VAL_DIR_OUT && val->scale == 0.0) {
+    syslog(LOG_ERR, "modbus value '%s': scale of an output must not be 0.", val->name);
+    return -1;
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->block->dir == UVRGW_CONF_VAL_DIR_OUT));

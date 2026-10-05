@@ -101,7 +101,7 @@ static cfg_opt_t mqtt_opts[] = {
   CFG_BOOL("retain", cfg_false, CFGF_NONE),
   CFG_FLOAT("init_value", 0.0, CFGF_NONE),
   CFG_INT("stale_timeout", 0, CFGF_NONE),
-  CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_SEC("logger", mqtt_logger_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
@@ -124,7 +124,7 @@ static cfg_opt_t json_opts[] = {
   CFG_STR("valid_if", NULL, CFGF_NONE),
   CFG_FLOAT("init_value", 0.0, CFGF_NONE),
   CFG_INT("stale_timeout", 0, CFGF_NONE),
-  CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -141,7 +141,7 @@ static cfg_opt_t can_frame_val_opts[] = {
 static cfg_opt_t can_frame_opts[] = {
   CFG_INT_CB("can_id", -1, CFGF_NONE, parse_can_id),
   CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
-  CFG_SEC("value", can_frame_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", can_frame_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -176,7 +176,7 @@ static cfg_opt_t mb_block_opts[] = {
   CFG_BOOL("sunspec_na", cfg_false, CFGF_NONE),
   CFG_INT("expect_reg", -1, CFGF_NONE),
   CFG_INT("expect_value", -1, CFGF_NONE),
-  CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -248,7 +248,7 @@ static cfg_opt_t sunspec_meter_opts[] = {
 static cfg_opt_t sunspec_server_opts[] = {
   CFG_STR("bind", "0.0.0.0", CFGF_NONE),
   CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
-  CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -283,7 +283,7 @@ static cfg_opt_t opts[] = {
   CFG_SEC("modbus_rtu", mb_rtu_opts, CFGF_MULTI),
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
-  CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_SEC("eval", eval_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
@@ -416,13 +416,13 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
   char *p;
 
   if (strncmp(value, "ANA:", 4) == 0) {
-    value += 4;
-    node = strtol(value, &p, 10);
+    node = strtol(value + 4, &p, 10);
     if (*p != ':') {
       goto fail;
     }
     chan = strtol(p + 1, &p, 10);
-    if (*p != 0) {
+    // chan is the first channel of the frame (4 channels per frame)
+    if (*p != 0 || node < 0 || node > 0x3f || chan < 0 || chan > 0x1f || (chan & 3) != 0) {
       goto fail;
     }
     *((int *) result) = 0x200 | (node & 0x3f) | (((chan) & 0x0c) << 5) | (((chan) & 0x10) << 2);
@@ -430,9 +430,8 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
   }
 
   if (strncmp(value, "DIG:", 4) == 0) {
-    value += 4;
-    node = strtol(value, &p, 10);
-    if (*p != 0) {
+    node = strtol(value + 4, &p, 10);
+    if (*p != 0 || node < 0 || node > 0x3f) {
       goto fail;
     }
     *((int *) result) = 0x180 | (node & 0x3f);
@@ -440,8 +439,7 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
   }
 
   if (strncmp(value, "0x", 2) == 0) {
-    value += 2;
-    *((int *) result) = strtol(value, &p, 16);
+    *((int *) result) = strtol(value + 2, &p, 16);
     if (*p != 0) {
       goto fail;
     }

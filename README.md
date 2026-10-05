@@ -292,7 +292,7 @@ can {
 
   # Receive frame (CAN → value dispatcher)
   frame {
-    can_id = "ANA:1:1"   # UVR analogue node 1, channel 1  (or 0x201, or decimal)
+    can_id = "ANA:1:0"   # UVR analogue node 1, frame starting at channel 0  (or 0x201, or decimal)
     dir    = in
 
     value "outdoor_temp" {
@@ -320,7 +320,7 @@ can {
 
 | Syntax | Meaning | Example |
 |--------|---------|---------|
-| `ANA:node:chan` | UVR analogue frame | `ANA:1:1` → `0x201` |
+| `ANA:node:chan` | UVR analogue frame; `chan` is the first channel of the frame (0, 4, … 28), a frame has 4 channels | `ANA:1:0` → `0x201`, `ANA:1:4` → `0x281` |
 | `DIG:node` | UVR digital frame | `DIG:2` → `0x182` |
 | `0x…` | Hexadecimal literal | `0x1FF` |
 | decimal | Decimal literal | `511` |

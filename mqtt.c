@@ -175,6 +175,11 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (conn->qos < 0 || conn->qos > 2) {
+    syslog(LOG_ERR, "mqtt '%s': qos invalid.", conn->host);
+    return -1;
+  }
+
   if (uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(MQTT_VAL_T), conn, value_configure) < 0) {
     return -1;
   }
@@ -263,13 +268,28 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     stale_timeout = val->conn->stale_timeout;
   }
 
+  if (val->dir < 0) {
+    syslog(LOG_ERR, "mqtt value '%s': dir not given.", val->name);
+    return -1;
+  }
+
+  if (val->type < 0) {
+    syslog(LOG_ERR, "mqtt value '%s': type not given.", val->name);
+    return -1;
+  }
+
   if (val->topic == NULL) {
-    syslog(LOG_ERR, "mqtt value topic not given.");
+    syslog(LOG_ERR, "mqtt value '%s': topic not given.", val->name);
+    return -1;
+  }
+
+  if (val->qos < 0 || val->qos > 2) {
+    syslog(LOG_ERR, "mqtt value '%s': qos invalid.", val->name);
     return -1;
   }
 
   if (val->dir == UVRGW_CONF_VAL_DIR_OUT && val->type == UVRGW_CONF_MQTT_TYPE_NUMBER && val->fmt == NULL) {
-    syslog(LOG_ERR, "mqtt value fmt not given.");
+    syslog(LOG_ERR, "mqtt value '%s': fmt not given.", val->name);
     return -1;
   }
 
