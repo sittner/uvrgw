@@ -103,6 +103,15 @@ void counter_unconfigure(void);
 int counter_startup(void);
 
 /**
+ * @brief Publish the totals of all counters that have one.
+ *
+ * A counter loaded from its state file has a valid total before its
+ * source delivers; this dispatches it once.  Call after the outputs are
+ * started.
+ */
+void counter_publish(void);
+
+/**
  * @brief Stop the counter thread.
  *
  * The thread publishes power integration counters, so it must be stopped

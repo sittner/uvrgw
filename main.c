@@ -140,6 +140,9 @@ int main(int argc, char **argv)
     goto fail_mqtt;
   }
 
+  // totals loaded from the state files (needs the outputs)
+  counter_publish();
+
   // value timeouts (dispatches resets to the outputs)
   if (uvrgw_conf_startup() < 0) {
     goto fail_watchdog;

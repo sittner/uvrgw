@@ -229,6 +229,19 @@ int counter_startup(void) {
   return 0;
 }
 
+void counter_publish(void) {
+  COUNTER_T *c;
+  int idx;
+
+  for (c = counters, idx = 0; idx < counters_count; c++, idx++) {
+    pthread_mutex_lock(&c->lock);
+    if (!c->disabled && c->initialized) {
+      uvrgw_conf_disp_val(c->disp, c, c->accum, true);
+    }
+    pthread_mutex_unlock(&c->lock);
+  }
+}
+
 void counter_stop(void) {
   if (thread_running) {
     thread_running = false;
