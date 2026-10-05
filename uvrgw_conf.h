@@ -154,7 +154,9 @@ typedef struct UVRGW_CONF_VAL_DISPATCH {
   double init_value;                      /**< Start value of the producer. */
   int stale_timeout;                      /**< Max. time (ms) without data before reset to @c init_value; 0 = never. */
 
-  pthread_mutex_t disp_lock;              /**< Held while storing a value and firing the callbacks. */
+  pthread_mutex_t disp_lock;              /**< Held while storing a value and firing the callbacks; protects @c deadline and @c timed_out. */
+  int64_t deadline;                       /**< Monotonic time (ms) at which the watchdog resets the value; 0 = disarmed. */
+  bool timed_out;                         /**< Reset by the watchdog, no data since (for state logging). */
   pthread_mutex_t last_lock;              /**< Protects @c last_value, @c valid and @c last_data. */
   double last_value;                      /**< Last dispatched value (always finite). */
   bool valid;                             /**< True if @c last_value is current data. */
@@ -300,6 +302,29 @@ void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, boo
  * @return    true if the value is valid, false otherwise.
  */
 bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts);
+
+/**
+ * @brief Start the watchdog that resets values without current data.
+ *
+ * Every name whose producer has a @c stale_timeout gets a deadline,
+ * armed here and on every dispatch of valid data.  Once a deadline has
+ * expired (checked once per second) the value is set to the producer's
+ * @c init_value, marked invalid and dispatched once with the producer's
+ * value pointer as source, then the deadline stays disarmed until new
+ * data arrives.  A name that never delivers is thus reset once at
+ * @c stale_timeout after startup.  Reset and next data are logged once.
+ *
+ * The watchdog dispatches values, so it is started after the outputs and
+ * stopped before them.
+ *
+ * @return  0 on success, -1 if the thread could not be started.
+ */
+int uvrgw_conf_startup(void);
+
+/**
+ * @brief Stop the watchdog thread.
+ */
+void uvrgw_conf_shutdown(void);
 
 /**
  * @brief Get the state directory for persistent data.
