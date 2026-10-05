@@ -19,10 +19,11 @@
  *    total power factor P / S
  * Quantities that are neither configured nor derivable are served as 0.
  *
- * If a configured source value has not been updated within
- * @c stale_timeout, requests for that meter are answered with a
- * "server device failure" exception, so the client keeps its last data
- * instead of seeing bogus values (e.g. energy counters dropping to 0).
+ * If a configured source value is invalid (no data yet, or reset after
+ * the @c stale_timeout of its input), requests for that meter are
+ * answered with a "server device failure" exception, so the client keeps
+ * its last data instead of seeing bogus values (e.g. energy counters
+ * dropping to 0).
  */
 
 #ifndef _SUNSPEC_H_
@@ -79,7 +80,7 @@ typedef struct SUNSPEC_METER {
   struct SUNSPEC_SERVER *server; /**< Back-pointer to the server. */
 
   modbus_mapping_t *mapping; /**< Register image (starting at 40000). */
-  bool unavailable;          /**< Last request failed due to stale values (for state logging). */
+  bool unavailable;          /**< Last request failed due to invalid values (for state logging). */
 } SUNSPEC_METER_T;
 
 /**
@@ -88,7 +89,6 @@ typedef struct SUNSPEC_METER {
 typedef struct SUNSPEC_SERVER {
   const char *bind;          /**< Local address to listen on. */
   int port;                  /**< TCP port. */
-  int stale_timeout;         /**< Max. age (ms) of source values. */
 
   int meters_count;          /**< Number of meters. */
   struct SUNSPEC_METER *meters; /**< Array of meters. */
