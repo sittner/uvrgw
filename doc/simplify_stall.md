@@ -1,6 +1,6 @@
 # Implementation guide: simplify stalled data handling
 
-Status: steps 1–5 of section 7 implemented; deviations from this guide
+Status: steps 1–7 of section 7 implemented; deviations from this guide
 are listed in section 9.
 
 ## 1. Goal
@@ -335,7 +335,7 @@ Behaviour changes worth stating in the README:
 
 ## 7. Plan
 
-One commit each, every step building (steps 1–5 done, see section 9):
+One commit each, every step building (steps 1–7 done, see section 9):
 
 1. Dispatcher: `valid` flag, `init_value`/`stale_timeout`/producer `val`
    in `uvrgw_conf_set_producer()`, validity parameter on
@@ -485,6 +485,26 @@ Step 5 (eval):
 - The NaN checks in the expression functions (`if`, `min`, `max`,
   `clamp`, `hyst`) are left unchanged; they are no longer needed but
   harmless.
+
+Step 6 (dispatcher cleanup):
+
+- `last_data` is gone as well: without the `ts` parameter only the
+  watchdog's log message needs to know whether data ever arrived, so it
+  is a `received` flag under `disp_lock`.
+
+Step 7 (config checks):
+
+- All checks run in one loop, `check_dispatchers()` in `uvrgw_conf.c`,
+  after `eval_configure()`.  Loading stops at the first error.
+- `uvrgw_conf_set_producer()` gains an `input` parameter (true for MQTT,
+  JSON, CAN and Modbus, false for counter and eval), so computed
+  producers are exempt.
+- Readers register with `uvrgw_conf_need_timeout(dp, module, instance)`
+  at configure time: MQTT logger values, SunSpec meter sources and the
+  source of an integrating counter.  The first reader is named in the
+  error: "value 'x' of json '...' has no stale_timeout, but is read by
+  mqtt logger 'y'."  A name without producer is reported as "value 'x'
+  is not produced by any module." without naming its readers.
 
 Interim state until step 8: the README still documents the removed
 options (`stale_timeout` of logger and SunSpec, `max_gap`, `max_age`,
