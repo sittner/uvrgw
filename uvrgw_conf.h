@@ -254,15 +254,15 @@ int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, c
 /**
  * @brief Register a reader that needs a value without stale data.
  *
- * Called during configuration by modules that would publish a frozen
- * value (MQTT logger, SunSpec meter) or integrate it forever (counter
- * with @c integrate_power).  After all modules are configured, a name
- * whose producer is an input without @c stale_timeout is then a
- * configuration error.  Computed producers are not checked.
+ * Called during configuration for power sources that would be used as
+ * current power when frozen: the power sources of a SunSpec meter and the
+ * source of a counter with @c integrate_power.  After all modules are
+ * configured, a name whose producer is an input without @c stale_timeout
+ * is then a configuration error.  Computed producers are not checked.
  *
  * @param dp        Dispatcher of the read name.
- * @param module    Reader's module/section type (e.g. "mqtt logger").
- * @param instance  Reader's section identification (e.g. logger name).
+ * @param module    Reader's module/section type (e.g. "sunspec meter").
+ * @param instance  Reader's section identification (e.g. meter name).
  * @return          0 on success, -1 on OOM.
  */
 int uvrgw_conf_need_timeout(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance);
