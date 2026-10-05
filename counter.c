@@ -9,6 +9,11 @@
  * Counter values are dispatched while holding the counter lock, so the
  * published values are strictly ordered.  This is deadlock free, because
  * the source of a counter must not be another counter.
+ *
+ * A counter value is dispatched as valid (only once it has a total).  An
+ * invalid dispatch of the source (reset after a timeout) is not data: a
+ * device counter ignores it, power integration stops until the next power
+ * value.
  */
 #include "counter.h"
 #include "utils.h"
@@ -41,8 +46,8 @@ static COUNTER_T *find_counter(const char *name);
 static int source_update(void *v, double f, bool valid);
 static bool device_update(COUNTER_T *c, double raw, int64_t now);
 static void power_update(COUNTER_T *c, double power, int64_t now);
+static void power_stop(COUNTER_T *c, int64_t now);
 static void integrate(COUNTER_T *c, int64_t now);
-static bool power_fresh(COUNTER_T *c, int64_t now);
 static void *counter_thread(void *ptr);
 static char *state_path(const COUNTER_T *c, const char *suffix);
 static void load_state(COUNTER_T *c);
@@ -82,7 +87,6 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
   c->source = uvrgw_conf_strdup(cfg_getstr(cfg, "source"));
   c->integrate_power = cfg_getbool(cfg, "integrate_power");
   c->max_power = cfg_getfloat(cfg, "max_power");
-  c->max_gap = cfg_getint(cfg, "max_gap");
   c->scale = cfg_getfloat(cfg, "scale");
   c->sign = cfg_getint(cfg, "sign");
   pthread_mutex_init(&c->lock, NULL);
@@ -108,10 +112,6 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
   }
 
   if (c->integrate_power) {
-    if (c->max_gap <= 0) {
-      syslog(LOG_ERR, "counter '%s': max_gap invalid.", c->name);
-      return -1;
-    }
     if (c->max_power != 0.0) {
       syslog(LOG_ERR, "counter '%s': max_power is not allowed with integrate_power.", c->name);
       return -1;
@@ -250,7 +250,7 @@ void counter_shutdown(void) {
  *
  * @param v      @c COUNTER_T pointer.
  * @param f      Source value (device counter reading or power, before @c scale).
- * @param valid  Validity of the source value (not used yet).
+ * @param valid  Validity of the source value; an invalid value is not data.
  * @return       0.
  */
 static int source_update(void *v, double f, bool valid) {
@@ -263,7 +263,13 @@ static int source_update(void *v, double f, bool valid) {
   pthread_mutex_lock(&c->lock);
 
   if (!c->disabled) {
-    if (c->integrate_power) {
+    if (!valid) {
+      // no reading: a device counter keeps its total, integration stops
+      if (c->integrate_power) {
+        power_stop(c, now);
+      }
+      ok = false;
+    } else if (c->integrate_power) {
       power_update(c, f, now);
     } else {
       ok = device_update(c, f, now);
@@ -356,13 +362,26 @@ static void power_update(COUNTER_T *c, double power, int64_t now) {
   integrate(c, now);
   c->has_power = true;
   c->power = power;
-  c->power_ts = now;
   c->integrated_ts = now;
 }
 
 /**
- * @brief Integrate the held power value up to @p now, but at most up to
- *        @c max_gap after the last power value (called with lock held).
+ * @brief Stop power integration until the next power value (called with
+ *        lock held).
+ *
+ * The held power value is integrated up to @p now and then dropped.
+ *
+ * @param c    Counter.
+ * @param now  Current monotonic time (ms).
+ */
+static void power_stop(COUNTER_T *c, int64_t now) {
+  integrate(c, now);
+  c->has_power = false;
+}
+
+/**
+ * @brief Integrate the held power value up to @p now (called with lock
+ *        held).
  *
  * Only power of the configured sign is counted (as positive energy).
  *
@@ -370,30 +389,20 @@ static void power_update(COUNTER_T *c, double power, int64_t now) {
  * @param now  Current monotonic time (ms).
  */
 static void integrate(COUNTER_T *c, int64_t now) {
-  int64_t end;
   double power;
 
   if (!c->has_power) {
     return;
   }
 
-  end = c->power_ts + c->max_gap;
-  if (end > now) {
-    end = now;
-  }
-
-  if (end > c->integrated_ts) {
+  if (now > c->integrated_ts) {
     power = c->power * c->sign;
     if (power > 0.0) {
-      c->accum += power * (double) (end - c->integrated_ts) / 3600000.0;
+      c->accum += power * (double) (now - c->integrated_ts) / 3600000.0;
       c->dirty = true;
     }
-    c->integrated_ts = end;
+    c->integrated_ts = now;
   }
-}
-
-static bool power_fresh(COUNTER_T *c, int64_t now) {
-  return c->has_power && (now - c->power_ts) <= c->max_gap;
 }
 
 /**
@@ -425,10 +434,7 @@ static void *counter_thread(void *ptr) {
         pthread_mutex_lock(&c->lock);
         if (!c->disabled && c->initialized) {
           integrate(c, now);
-          // publish only while the source is fresh (staleness propagates)
-          if (power_fresh(c, now)) {
-            uvrgw_conf_disp_val(c->disp, c, c->accum, true);
-          }
+          uvrgw_conf_disp_val(c->disp, c, c->accum, true);
         }
         pthread_mutex_unlock(&c->lock);
       }

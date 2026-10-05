@@ -82,7 +82,6 @@ static cfg_opt_t mqtt_logger_val_opts[] = {
 static cfg_opt_t mqtt_logger_opts[] = {
   CFG_STR("topic", NULL, CFGF_NONE),
   CFG_INT("interval", 300, CFGF_NONE),
-  CFG_INT("stale_timeout", 600, CFGF_NONE),
   CFG_INT("qos", 1, CFGF_NONE),
   CFG_SEC("value", mqtt_logger_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
@@ -247,7 +246,6 @@ static cfg_opt_t sunspec_meter_opts[] = {
 static cfg_opt_t sunspec_server_opts[] = {
   CFG_STR("bind", "0.0.0.0", CFGF_NONE),
   CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
-  CFG_INT("stale_timeout", 30000, CFGF_NONE),
   CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -256,7 +254,6 @@ static cfg_opt_t counter_opts[] = {
   CFG_STR("source", NULL, CFGF_NONE),
   CFG_BOOL("integrate_power", cfg_false, CFGF_NONE),
   CFG_FLOAT("max_power", 0.0, CFGF_NONE),
-  CFG_INT("max_gap", 60000, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_INT_CB("sign", UVRGW_CONF_COUNTER_SIGN_POSITIVE, CFGF_NONE, parse_counter_sign),
   CFG_END()

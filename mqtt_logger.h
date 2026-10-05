@@ -9,8 +9,9 @@
  *
  *   {"time":1790762700,"pv_energy":16852887.05,"office_temp":null}
  *
- * Values are read from the dispatcher (last value); values older than
- * @c stale_timeout or never received are logged as null.  Numbers always
+ * Values are read from the dispatcher (last value); invalid values (no
+ * data yet, or reset after the @c stale_timeout of their input) are
+ * logged as null.  Numbers always
  * contain a decimal point or exponent, so consumers infer a float type.
  *
  * Snapshots are only taken while the system clock is synchronised
@@ -44,7 +45,6 @@ typedef struct MQTT_LOGGER_VAL {
   const char *field;         /**< JSON field name (default: value name). */
   double scale;              /**< Multiplier for the value. */
   UVRGW_CONF_VAL_DISPATCH_T *disp; /**< Dispatcher of the value. */
-  bool received;             /**< A value has been received (for "never received" warning). */
 } MQTT_LOGGER_VAL_T;
 
 /**
@@ -54,7 +54,6 @@ typedef struct MQTT_LOGGER {
   const char *name;          /**< Logger name (section title, for logging). */
   const char *topic;         /**< Topic to publish to. */
   int interval;              /**< Snapshot interval in s. */
-  int stale_timeout;         /**< Max. age of values in s. */
   int qos;                   /**< QoS of the snapshot messages. */
 
   int values_count;          /**< Number of logged values. */
