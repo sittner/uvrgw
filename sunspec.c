@@ -26,8 +26,16 @@
 #include <syslog.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #define SERVER_SELECT_TIMEOUT_US 100000
+
+// TCP keepalive of client connections: probe after 60 s without data,
+// close after 3 unanswered probes sent every 10 s
+#define CLIENT_KEEPALIVE_IDLE_S  60
+#define CLIENT_KEEPALIVE_INTVL_S 10
+#define CLIENT_KEEPALIVE_COUNT   3
 
 #define MAP_START_ADDR 40000
 #define MAP_REGS       197
@@ -361,9 +369,22 @@ static void *server_thread(void *ptr) {
   return NULL;
 }
 
+/**
+ * @brief Accept a client connection.
+ *
+ * TCP keepalive is enabled on the connection, so a client that vanished
+ * without closing it (e.g. network drop) does not keep its slot forever:
+ * the socket then reports an error and handle_client() closes it.
+ *
+ * @param server  Server.
+ */
 static void accept_client(SUNSPEC_SERVER_T *server) {
   int fd;
   int i;
+  int on = 1;
+  int idle = CLIENT_KEEPALIVE_IDLE_S;
+  int intvl = CLIENT_KEEPALIVE_INTVL_S;
+  int count = CLIENT_KEEPALIVE_COUNT;
 
   fd = accept(server->listen_fd, NULL, NULL);
   if (fd < 0) {
@@ -371,14 +392,26 @@ static void accept_client(SUNSPEC_SERVER_T *server) {
     return;
   }
 
+  setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+
   for (i = 0; i < SUNSPEC_MAX_CLIENTS; i++) {
     if (server->client_fds[i] < 0) {
       server->client_fds[i] = fd;
+      if (server->clients_full) {
+        syslog(LOG_INFO, "sunspec server: accepting connections again.");
+        server->clients_full = false;
+      }
       return;
     }
   }
 
-  syslog(LOG_WARNING, "sunspec server: too many clients, connection rejected.");
+  if (!server->clients_full) {
+    syslog(LOG_WARNING, "sunspec server: too many clients, connections rejected.");
+    server->clients_full = true;
+  }
   close(fd);
 }
 

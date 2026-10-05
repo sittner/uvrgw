@@ -96,6 +96,7 @@ typedef struct SUNSPEC_SERVER {
   modbus_t *ctx;             /**< libmodbus server context. */
   int listen_fd;             /**< Listening socket, -1 if closed. */
   int client_fds[SUNSPEC_MAX_CLIENTS]; /**< Client sockets, -1 if unused. */
+  bool clients_full;         /**< Last connection was rejected, all client slots in use (for state logging). */
 
   pthread_t thread;          /**< Server thread handle. */
   bool thread_running;       /**< Set to false to request thread termination. */
