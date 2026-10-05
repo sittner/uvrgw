@@ -1,6 +1,6 @@
 # Implementation guide: simplify stalled data handling
 
-Status: steps 1–3 of section 7 implemented; deviations from this guide
+Status: steps 1–5 of section 7 implemented; deviations from this guide
 are listed in section 9.
 
 ## 1. Goal
@@ -335,7 +335,7 @@ Behaviour changes worth stating in the README:
 
 ## 7. Plan
 
-One commit each, every step building (steps 1–3 done, see section 9):
+One commit each, every step building (steps 1–5 done, see section 9):
 
 1. Dispatcher: `valid` flag, `init_value`/`stale_timeout`/producer `val`
    in `uvrgw_conf_set_producer()`, validity parameter on
@@ -454,8 +454,39 @@ Step 3 (watchdog):
   protects the deadline and a `timed_out` flag for the "received again"
   log.
 
-Interim behaviour until steps 4 and 5: eval skips values whose inputs
-are invalid, so its results are not republished after a reset, and the
-counter treats a reset as data (a power counter integrates
-`init_value`).  The logger already writes `null` after a reset, because
-`uvrgw_conf_get_val()` returns false.
+Step 4 (consumers):
+
+- Logger and SunSpec pass `NULL` as `ts` to `uvrgw_conf_get_val()` until
+  step 6.  The SunSpec state log names the first invalid source ("value
+  'x' is invalid").
+- Counter: an invalid source dispatch integrates the held power up to
+  that moment and then stops integration (`power_stop()`); a device
+  counter ignores it.  `power_ts` is gone with `max_gap`.  A dead power
+  source is thus integrated until the watchdog's reset, i.e. up to
+  `stale_timeout` plus the watchdog's 1 s check period.
+- Not in the guide: a counter loaded from its state file has a total but
+  was only dispatched with the next source reading, so a device counter
+  whose source was down at startup stayed invalid (the logger wrote
+  `null`, SunSpec answered exception 4) — unlike a source dying later,
+  which leaves the total valid and frozen.  `counter_publish()`
+  dispatches every counter that has a total once at startup; `main.c`
+  calls it after `mqtt_startup()`, so the MQTT outputs receive it.  Done
+  as a separate commit.
+
+Step 5 (eval):
+
+- `dt` restarts at 0 after a non-finite result (`has_last` is the
+  finiteness of the previous result), as it did after a skipped
+  evaluation; the guide does not say.
+- `deps` is removed (it only served the skipping); `refs` stays for the
+  input closure.
+- A non-finite result is logged once as "value 'x' invalid: result is
+  not finite" and its recovery as "value 'x' finite again".
+- The NaN checks in the expression functions (`if`, `min`, `max`,
+  `clamp`, `hyst`) are left unchanged; they are no longer needed but
+  harmless.
+
+Interim state until step 8: the README still documents the removed
+options (`stale_timeout` of logger and SunSpec, `max_gap`, `max_age`,
+eval `init`), and the production config does not load, because it still
+uses them.
