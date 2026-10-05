@@ -50,6 +50,8 @@ typedef struct REST_CONN {
   const char *pwd;       /**< HTTP Basic-Auth password; NULL if not required. */
   const char *valid_if;  /**< JSON path that must be present and non-zero for a poll to be used; NULL if not used. */
   bool invalid;          /**< Last poll was rejected by @c valid_if (for state logging). */
+  double init_value;     /**< Default @c init_value for all values of this connection. */
+  int stale_timeout;     /**< Default @c stale_timeout (ms) for all values of this connection; 0 = never. */
 
   int values_count;      /**< Number of value definitions. */
   struct REST_VAL *values; /**< Array of value definitions. */

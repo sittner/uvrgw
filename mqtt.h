@@ -61,6 +61,8 @@ typedef struct MQTT_CONN {
   int keepalive_period;      /**< MQTT keep-alive interval in seconds. */
   int qos;                   /**< Default QoS for all values on this connection. */
   bool retain;               /**< Default retain flag for all values on this connection. */
+  double init_value;         /**< Default @c init_value for all input values of this section. */
+  int stale_timeout;         /**< Default @c stale_timeout (ms) for all input values of this section; 0 = never. */
 
   int values_count;          /**< Number of value definitions. */
   struct MQTT_VAL *values;   /**< Array of value definitions. */
