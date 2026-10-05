@@ -48,7 +48,9 @@ Typical configuration:
   invalid dispatches, section 4.8), but the raw name would read
   `init_value` for everything else that reads it, which is wrong for an
   energy register sent to an output.  Log and serve the counter total,
-  not the raw reading.
+  not the raw reading.  A `stale_timeout` set on the device section also
+  applies to the raw counter readings, so override it with
+  `stale_timeout = 0` on each of them.
 
 ## 2. Current state (what is removed)
 
@@ -112,8 +114,8 @@ last):
   forever.  Eval and counter producers are not checked (see section 5).
 - The power source of a counter with `integrate_power` has no
   `stale_timeout`, if its producer is an input: the last power would be
-  integrated forever.  A power produced by an eval is not checked; its
-  own inputs are.
+  integrated forever.  A power produced by an eval is not checked
+  (section 5).
 
 ## 4. Design
 
