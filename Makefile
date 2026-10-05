@@ -35,7 +35,7 @@ tinyexpr/tinyexpr.o: DEFINES += -DTE_POW_FROM_RIGHT
 
 LIBS += -lpthread -lconfuse -lmodbus -lmosquitto -lcurl -ljson-c -lm
 
-.PHONY: all clean realclean install
+.PHONY: all clean realclean install test
 
 all: $(TARGET)
 
@@ -48,6 +48,10 @@ $(TARGET): $(OBJ)
 clean:
 	rm -f $(OBJ)
 	rm -f $(TARGET)
+
+# test suite (see test/run.py for the requirements and options)
+test: $(TARGET)
+	python3 test/run.py ./$(TARGET)
 
 install: $(TARGET)
 	install -m755 -D $(TARGET) $(DESTDIR)/usr/bin/$(TARGET)

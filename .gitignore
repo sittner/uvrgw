@@ -1,2 +1,3 @@
 *.o
 uvrgw
+__pycache__/
