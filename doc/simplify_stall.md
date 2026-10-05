@@ -1,6 +1,7 @@
 # Implementation guide: simplify stalled data handling
 
-Status: proposal, not implemented.
+Status: steps 1–3 of section 7 implemented; deviations from this guide
+are listed in section 9.
 
 ## 1. Goal
 
@@ -334,7 +335,7 @@ Behaviour changes worth stating in the README:
 
 ## 7. Plan
 
-One commit each, every step building:
+One commit each, every step building (steps 1–3 done, see section 9):
 
 1. Dispatcher: `valid` flag, `init_value`/`stale_timeout`/producer `val`
    in `uvrgw_conf_set_producer()`, validity parameter on
@@ -351,8 +352,8 @@ One commit each, every step building:
    (`max_gap` removed, own validity, invalid dispatch is not data).
 5. Eval: validity as the AND over the input closure; `max_age`, skipping
    and per-input logging removed; `init` renamed to `init_value`.
-6. Dispatcher cleanup: `last_update` and `updated` remnants and the `ts`
-   parameter of `uvrgw_conf_get_val()` removed.
+6. Dispatcher cleanup: the `ts` parameter of `uvrgw_conf_get_val()`
+   removed (`last_update` and `updated` are already gone, section 9).
 7. Config checks: name without producer, logged/metered value produced by
    an input without `stale_timeout`, integrating counter power source.
 8. Docs: README (options, inheritance, removed options, consequences) and
@@ -413,3 +414,48 @@ Rejected alternatives (so they are not discussed again):
   value is valid real data, for as long as the source's interval.  Only a
   single global dispatch lock deadlocks against the counter; a mutex per
   name is taken along the data flow and cannot (section 4.3).
+
+## 9. Implementation notes
+
+Deviations of the implemented steps from this guide, and the interim
+state the following steps build on.
+
+Step 1 (dispatcher):
+
+- `updated` and `last_update` were replaced right away instead of in
+  step 6: the dispatcher has `valid` and `last_data` (monotonic ms of the
+  last valid data, 0 if none).  `uvrgw_conf_get_val()` keeps its `ts`
+  parameter until step 6 and returns `last_data` there.
+- Producer registrations: inputs pass their value pointer, eval passes
+  `e` (its dispatch source) and `v->init`, counter passes `c`, 0 and 0.
+  Counter and eval dispatch with `valid = true` until steps 4 and 5.
+- `counter.c` `source_update()` receives `valid` but ignores it until
+  step 4 (its local result variable was renamed to `ok`).
+
+Step 2 (inputs):
+
+- `stale_timeout < 0` is not checked after all sections are configured
+  (section 3) but in `uvrgw_conf_set_producer()`, when the input value is
+  registered.  It also refuses a non-finite `init_value` (not in the
+  guide; it keeps NaN out of the stored value, like eval's `init`
+  check).  Section settings without input values are not checked.
+- Modbus (`dispatch_value()`) and JSON drop non-finite readings
+  themselves; MQTT already did.
+
+Step 3 (watchdog):
+
+- The watchdog lives in `uvrgw_conf.c` as `uvrgw_conf_startup()` /
+  `uvrgw_conf_shutdown()`; the thread only runs if a name has a
+  `stale_timeout`.  It dispatches values, so `main.c` starts it after
+  MQTT and stops it after eval and before `counter_stop()` /
+  `mqtt_shutdown()`.
+- Deadlines are armed in `uvrgw_conf_startup()` for names that have not
+  delivered data yet (MQTT inputs may already have); `disp_lock` also
+  protects the deadline and a `timed_out` flag for the "received again"
+  log.
+
+Interim behaviour until steps 4 and 5: eval skips values whose inputs
+are invalid, so its results are not republished after a reset, and the
+counter treats a reset as data (a power counter integrates
+`init_value`).  The logger already writes `null` after a reset, because
+`uvrgw_conf_get_val()` returns false.
