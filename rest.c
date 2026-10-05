@@ -113,7 +113,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (uvrgw_conf_set_producer(val->disp, "json", val->conn->url) < 0) {
+  if (uvrgw_conf_set_producer(val->disp, "json", val->conn->url, val, 0.0, 0) < 0) {
     return -1;
   }
 
@@ -277,7 +277,7 @@ static int conn_task(REST_CONN_T *conn) {
     }
 
     // dispatch value
-    uvrgw_conf_disp_val(val->disp, val, f);
+    uvrgw_conf_disp_val(val->disp, val, f, true);
   }
 
   json_object_put(json);

@@ -88,7 +88,7 @@ static bool valid_name(const char *name);
 static bool is_function(const char *name);
 static EVAL_VAL_T *find_value(EVAL_T *e, const char *name);
 static UVRGW_CONF_VAL_DISPATCH_T *find_dispatcher(const char *name);
-static int trigger_update(void *v, double f);
+static int trigger_update(void *v, double f, bool valid);
 static void *eval_thread(void *ptr);
 static void evaluate(EVAL_T *e);
 
@@ -209,7 +209,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     if (v->disp == NULL) {
       return -1;
     }
-    if (uvrgw_conf_set_producer(v->disp, "eval", e->name) < 0) {
+    if (uvrgw_conf_set_producer(v->disp, "eval", e->name, e, v->init, 0) < 0) {
       return -1;
     }
   }
@@ -826,11 +826,12 @@ void eval_shutdown(void) {
  *
  * Runs in the thread of the source; only marks the eval as pending.
  *
- * @param v  @c EVAL_T pointer.
- * @param f  Trigger value (unused, values are read on evaluation).
- * @return   0.
+ * @param v      @c EVAL_T pointer.
+ * @param f      Trigger value (unused, values are read on evaluation).
+ * @param valid  Trigger validity (unused, read on evaluation).
+ * @return       0.
  */
-static int trigger_update(void *v, double f) {
+static int trigger_update(void *v, double f, bool valid) {
   EVAL_T *e = (EVAL_T *) v;
 
   pthread_mutex_lock(&lock);
@@ -981,7 +982,7 @@ static void evaluate(EVAL_T *e) {
   // publish all updated values, also unchanged ones (freshness)
   for (v = e->values, idx = 0; idx < e->values_count; v++, idx++) {
     if (v->updated && v->disp != NULL) {
-      uvrgw_conf_disp_val(v->disp, e, e->slots[v->slot]);
+      uvrgw_conf_disp_val(v->disp, e, e->slots[v->slot], true);
     }
   }
 }

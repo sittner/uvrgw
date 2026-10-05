@@ -38,7 +38,7 @@ static bool thread_running;
 static int counter_configure_one(cfg_t *cfg, void *ctx, void *child);
 static bool valid_name(const char *name);
 static COUNTER_T *find_counter(const char *name);
-static int source_update(void *v, double f);
+static int source_update(void *v, double f, bool valid);
 static bool device_update(COUNTER_T *c, double raw, int64_t now);
 static void power_update(COUNTER_T *c, double power, int64_t now);
 static void integrate(COUNTER_T *c, int64_t now);
@@ -133,7 +133,7 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (uvrgw_conf_set_producer(c->disp, "counter", c->name) < 0) {
+  if (uvrgw_conf_set_producer(c->disp, "counter", c->name, c, 0.0, 0) < 0) {
     return -1;
   }
 
@@ -248,14 +248,15 @@ void counter_shutdown(void) {
 /**
  * @brief Dispatcher callback: a new source value arrived.
  *
- * @param v  @c COUNTER_T pointer.
- * @param f  Source value (device counter reading or power, before @c scale).
- * @return   0.
+ * @param v      @c COUNTER_T pointer.
+ * @param f      Source value (device counter reading or power, before @c scale).
+ * @param valid  Validity of the source value (not used yet).
+ * @return       0.
  */
-static int source_update(void *v, double f) {
+static int source_update(void *v, double f, bool valid) {
   COUNTER_T *c = (COUNTER_T *) v;
   int64_t now = utl_get_ticks();
-  bool valid = true;
+  bool ok = true;
 
   f *= c->scale;
 
@@ -265,11 +266,11 @@ static int source_update(void *v, double f) {
     if (c->integrate_power) {
       power_update(c, f, now);
     } else {
-      valid = device_update(c, f, now);
+      ok = device_update(c, f, now);
     }
 
-    if (valid && c->initialized) {
-      uvrgw_conf_disp_val(c->disp, c, c->accum);
+    if (ok && c->initialized) {
+      uvrgw_conf_disp_val(c->disp, c, c->accum, true);
     }
   }
 
@@ -426,7 +427,7 @@ static void *counter_thread(void *ptr) {
           integrate(c, now);
           // publish only while the source is fresh (staleness propagates)
           if (power_fresh(c, now)) {
-            uvrgw_conf_disp_val(c->disp, c, c->accum);
+            uvrgw_conf_disp_val(c->disp, c, c->accum, true);
           }
         }
         pthread_mutex_unlock(&c->lock);
