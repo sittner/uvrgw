@@ -374,8 +374,7 @@ One commit each, every step building (all done, see section 9):
 7. Config checks: name without producer, logged/metered value produced by
    an input without `stale_timeout`, integrating counter power source.
 8. Power source check: the logger no longer requires a `stale_timeout`,
-   SunSpec only for its power sources (section 3; implementation in
-   section 9, step 7).
+   SunSpec only for its power sources (section 3).
 9. Docs: README (options, inheritance, removed options, consequences) and
    `doc/eval.md`.  Production config (`uvrgw.conf`, untracked):
    `stale_timeout` for the SunSpec power sources and the
@@ -451,110 +450,34 @@ Rejected alternatives (so they are not discussed again):
 
 ## 9. Implementation notes
 
-Deviations of the implemented steps from this guide, and the interim
-state the following steps build on.
+Where the implementation differs from or goes beyond sections 3 and 4:
 
-Step 1 (dispatcher):
-
-- `updated` and `last_update` were replaced right away instead of in
-  step 6: the dispatcher has `valid` and `last_data` (monotonic ms of the
-  last valid data, 0 if none).  `uvrgw_conf_get_val()` keeps its `ts`
-  parameter until step 6 and returns `last_data` there.
-- Producer registrations: inputs pass their value pointer, eval passes
-  `e` (its dispatch source) and `v->init`, counter passes `c`, 0 and 0.
-  Counter and eval dispatch with `valid = true` until steps 4 and 5.
-- `counter.c` `source_update()` receives `valid` but ignores it until
-  step 4 (its local result variable was renamed to `ok`).
-
-Step 2 (inputs):
-
-- `stale_timeout < 0` is not checked after all sections are configured
-  (section 3) but in `uvrgw_conf_set_producer()`, when the input value is
-  registered.  It also refuses a non-finite `init_value` (not in the
-  guide; it keeps NaN out of the stored value, like eval's `init`
-  check).  Section settings without input values are not checked.
-- Modbus (`dispatch_value()`) and JSON drop non-finite readings
-  themselves; MQTT already did.
-
-Step 3 (watchdog):
-
-- The watchdog lives in `uvrgw_conf.c` as `uvrgw_conf_startup()` /
-  `uvrgw_conf_shutdown()`; the thread only runs if a name has a
-  `stale_timeout`.  It dispatches values, so `main.c` starts it after
-  MQTT and stops it after eval and before `counter_stop()` /
-  `mqtt_shutdown()`.
-- Deadlines are armed in `uvrgw_conf_startup()` for names that have not
-  delivered data yet (MQTT inputs may already have); `disp_lock` also
-  protects the deadline and a `timed_out` flag for the "received again"
-  log.
-
-Step 4 (consumers):
-
-- Logger and SunSpec pass `NULL` as `ts` to `uvrgw_conf_get_val()` until
-  step 6.  The SunSpec state log names the first invalid source ("value
-  'x' is invalid").
+- Dispatcher: `last_update`, `updated` and `last_data` are gone; a
+  `received` flag (under `disp_lock`) only selects the watchdog's log
+  message.  `uvrgw_conf_set_producer()` has an `input` parameter (false
+  for counter and eval), so computed producers are exempt from the
+  timeout check.
+- Watchdog: `uvrgw_conf_startup()` / `uvrgw_conf_shutdown()` in
+  `uvrgw_conf.c`; the thread only runs if a name has a `stale_timeout`.
+  `main.c` starts it after MQTT and stops it after eval, before the
+  counters and outputs.
+- Config checks: `stale_timeout < 0` and a non-finite `init_value` are
+  refused in `uvrgw_conf_set_producer()`.  The remaining checks run in
+  `check_dispatchers()` after `eval_configure()` and stop at the first
+  error.  Readers needing a timeout register with
+  `uvrgw_conf_need_timeout()`: the SunSpec power sources and the source
+  of an integrating counter.
+- Inputs: Modbus and JSON drop non-finite readings themselves (MQTT
+  already did).
 - Counter: an invalid source dispatch integrates the held power up to
-  that moment and then stops integration (`power_stop()`); a device
-  counter ignores it.  `power_ts` is gone with `max_gap`.  A dead power
-  source is thus integrated until the watchdog's reset, i.e. up to
-  `stale_timeout` plus the watchdog's 1 s check period.
-- Not in the guide: a counter loaded from its state file has a total but
-  was only dispatched with the next source reading, so a device counter
-  whose source was down at startup stayed invalid (the logger wrote
-  `null`, SunSpec answered exception 4) — unlike a source dying later,
-  which leaves the total valid and frozen.  `counter_publish()`
-  dispatches every counter that has a total once at startup; `main.c`
-  calls it after `mqtt_startup()`, so the MQTT outputs receive it.  Done
-  as a separate commit.
-
-Step 5 (eval):
-
-- `dt` restarts at 0 after a non-finite result (`has_last` is the
-  finiteness of the previous result), as it did after a skipped
-  evaluation; the guide does not say.
-- `deps` is removed (it only served the skipping); `refs` stays for the
-  input closure.
-- A non-finite result is logged once as "value 'x' invalid: result is
-  not finite" and its recovery as "value 'x' finite again".
-- The NaN checks in the expression functions (`if`, `min`, `max`,
-  `clamp`, `hyst`) are left unchanged; they are no longer needed but
-  harmless.
-
-Step 6 (dispatcher cleanup):
-
-- `last_data` is gone as well: without the `ts` parameter only the
-  watchdog's log message needs to know whether data ever arrived, so it
-  is a `received` flag under `disp_lock`.
-
-Step 7 (config checks):
-
-- All checks run in one loop, `check_dispatchers()` in `uvrgw_conf.c`,
-  after `eval_configure()`.  Loading stops at the first error.
-- `uvrgw_conf_set_producer()` gains an `input` parameter (true for MQTT,
-  JSON, CAN and Modbus, false for counter and eval), so computed
-  producers are exempt.
-- Readers register with `uvrgw_conf_need_timeout(dp, module, instance)`
-  at configure time: MQTT logger values, SunSpec meter sources and the
-  source of an integrating counter.  The first reader is named in the
-  error: "value 'x' of json '...' has no stale_timeout, but is read by
-  mqtt logger 'y'."  A name without producer is reported as "value 'x'
-  is not produced by any module." without naming its readers.
-- Step 8 narrows this check to power sources (section 3, section 8):
-  the registration in `mqtt_logger.c` is removed, and `sunspec.c`
-  `src_configure()` registers only the power sources (`power_l1` …
-  `power_l3`, `power`).  `uvrgw_conf_need_timeout()`, `timeout_reader`
-  and the check in `check_dispatchers()` stay unchanged; the counter's
-  registration of an `integrate_power` source stays as well.
-
-Step 9 (docs and production config):
-
-- README: new configuration section "Stalled data" (options,
-  inheritance, required timeouts, removed options); logger, counter,
-  eval, SunSpec and architecture sections adapted.
-- `doc/eval.md` is kept as the record of the eval implementation; its
-  status names this guide, and sections 3, 4.4, 4.5 and 7 describe the
-  current behaviour.
-- Production config: `stale_timeout = 10000` on the SunSpec power
-  sources (`hp_p1..3`, `bev_p1..3`, `goe_power`) and `360000` on the
-  `integrate_power` sources (`power_radi`, `power_hp`,
-  `heater_power_in`); no other value has one.
+  that moment and then stops (`power_stop()`), so a dead source is
+  integrated for up to `stale_timeout` plus the watchdog's 1 s check
+  period.  `counter_publish()` dispatches every total loaded from a state
+  file once at startup (called after `mqtt_startup()`); otherwise a
+  device counter whose source is down at startup would stay invalid.
+- Eval: `dt` restarts at 0 after a non-finite result.  `deps` is removed,
+  `refs` stays for the input closure.  The NaN checks of the expression
+  functions stay, so a NaN inside an expression still yields a
+  non-finite (invalid) result.
+- Production config: `stale_timeout = 10000` on the SunSpec power sources
+  and `360000` on the `integrate_power` sources; no other value has one.
