@@ -201,7 +201,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     if (v->disp == NULL) {
       return -1;
     }
-    if (uvrgw_conf_set_producer(v->disp, "eval", e->name, e, v->init_value, 0) < 0) {
+    if (uvrgw_conf_set_producer(v->disp, "eval", e->name, e, false, v->init_value, 0) < 0) {
       return -1;
     }
   }

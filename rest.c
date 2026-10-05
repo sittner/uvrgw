@@ -131,7 +131,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (uvrgw_conf_set_producer(val->disp, "json", val->conn->url, val, init_value, stale_timeout) < 0) {
+  if (uvrgw_conf_set_producer(val->disp, "json", val->conn->url, val, true, init_value, stale_timeout) < 0) {
     return -1;
   }
 

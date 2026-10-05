@@ -283,7 +283,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host, val, init_value, stale_timeout) < 0) {
+  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host, val, true, init_value, stale_timeout) < 0) {
     return -1;
   }
 

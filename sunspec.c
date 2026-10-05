@@ -63,7 +63,7 @@ typedef struct {
 
 static int server_configure(cfg_t *cfg, void *ctx, void *child);
 static int meter_configure(cfg_t *cfg, void *ctx, void *child);
-static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_SRC_T *src);
+static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_METER_T *meter, SUNSPEC_SRC_T *src);
 static int str_configure(cfg_t *cfg, const char *key, int max_len, const char **str);
 static int server_startup(SUNSPEC_SERVER_T *server);
 static void server_shutdown(SUNSPEC_SERVER_T *server);
@@ -150,16 +150,16 @@ static int meter_configure(cfg_t *cfg, void *ctx, void *child) {
   for (ph = 0; ph < SUNSPEC_PHASES; ph++) {
     for (q = 0; q < SUNSPEC_PH_COUNT; q++) {
       snprintf(key, sizeof(key), "%s_l%d", phase_keys[q], ph + 1);
-      if (src_configure(cfg, key, &meter->phase[ph][q]) < 0) {
+      if (src_configure(cfg, key, meter, &meter->phase[ph][q]) < 0) {
         return -1;
       }
     }
   }
 
-  if (src_configure(cfg, "power", &meter->power) < 0 ||
-      src_configure(cfg, "energy_import", &meter->energy_imp) < 0 ||
-      src_configure(cfg, "energy_export", &meter->energy_exp) < 0 ||
-      src_configure(cfg, "frequency", &meter->frequency) < 0) {
+  if (src_configure(cfg, "power", meter, &meter->power) < 0 ||
+      src_configure(cfg, "energy_import", meter, &meter->energy_imp) < 0 ||
+      src_configure(cfg, "energy_export", meter, &meter->energy_exp) < 0 ||
+      src_configure(cfg, "frequency", meter, &meter->frequency) < 0) {
     return -1;
   }
 
@@ -172,7 +172,7 @@ static int meter_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
-static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_SRC_T *src) {
+static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_METER_T *meter, SUNSPEC_SRC_T *src) {
   src->name = uvrgw_conf_strdup(cfg_getstr(cfg, key));
   if (src->name == NULL) {
     return 0;
@@ -180,6 +180,10 @@ static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_SRC_T *src) {
 
   src->disp = uvrgw_conf_get_dispatcher(src->name, false);
   if (src->disp == NULL) {
+    return -1;
+  }
+
+  if (uvrgw_conf_need_timeout(src->disp, "sunspec meter", meter->name) < 0) {
     return -1;
   }
 

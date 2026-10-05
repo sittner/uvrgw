@@ -56,6 +56,8 @@ static int parse_mb_rtu_rts(cfg_t *cfg, cfg_opt_t *opt, const char *value, void 
 static int parse_counter_sign(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 
+static char *owner_str(const char *module, const char *instance);
+static int check_dispatchers(void);
 static void init_dispatcher(void);
 static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid);
 static void *watchdog_thread(void *ptr);
@@ -535,6 +537,10 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
+  if (check_dispatchers()) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
   mb_register_disp_cbs();
@@ -575,6 +581,7 @@ void uvrgw_conf_cleanup(void) {
     pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
     free(dp->producer);
+    free(dp->timeout_reader);
     free(dp->value_cbs);
     free(dp);
     dp = next;
@@ -693,20 +700,20 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
  * @param module         Module/section type.
  * @param instance       Section identification.
  * @param val            Producer's value pointer.
+ * @param input          True for input values.
  * @param init_value     Start and reset value.
  * @param stale_timeout  Timeout in ms; 0 = never.
  * @return               0 on success, -1 on duplicate producer or OOM.
  */
 int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance,
-                            void *val, double init_value, int stale_timeout) {
+                            void *val, bool input, double init_value, int stale_timeout) {
   char *owner;
 
-  owner = malloc(strlen(module) + strlen(instance) + 4);
+  owner = owner_str(module, instance);
   if (owner == NULL) {
     syslog(LOG_ERR, "Failed to allocate producer of value '%s'.", dp->name);
     return -1;
   }
-  sprintf(owner, "%s '%s'", module, instance);
 
   if (dp->producer != NULL) {
     syslog(LOG_ERR, "value '%s' of %s is already produced by %s.", dp->name, owner, dp->producer);
@@ -728,9 +735,79 @@ int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, c
 
   dp->producer = owner;
   dp->producer_val = val;
+  dp->producer_input = input;
   dp->init_value = init_value;
   dp->stale_timeout = stale_timeout;
   dp->last_value = init_value;
+  return 0;
+}
+
+/**
+ * @brief Register a reader that needs a value without stale data (see header).
+ *
+ * Only the first reader is kept, for the error message.
+ *
+ * @param dp        Dispatcher.
+ * @param module    Reader's module/section type.
+ * @param instance  Reader's section identification.
+ * @return          0 on success, -1 on OOM.
+ */
+int uvrgw_conf_need_timeout(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance) {
+  if (dp->timeout_reader != NULL) {
+    return 0;
+  }
+
+  dp->timeout_reader = owner_str(module, instance);
+  if (dp->timeout_reader == NULL) {
+    syslog(LOG_ERR, "Failed to allocate reader of value '%s'.", dp->name);
+    return -1;
+  }
+
+  return 0;
+}
+
+/**
+ * @brief Format a module and instance as "module 'instance'".
+ *
+ * @param module    Module/section type.
+ * @param instance  Section identification.
+ * @return          Newly allocated string, or NULL on OOM.
+ */
+static char *owner_str(const char *module, const char *instance) {
+  char *s;
+
+  s = malloc(strlen(module) + strlen(instance) + 4);
+  if (s != NULL) {
+    sprintf(s, "%s '%s'", module, instance);
+  }
+
+  return s;
+}
+
+/**
+ * @brief Check the producers of all names after configuration.
+ *
+ * Every name needs a producer, and a name read by a module that needs
+ * current data (see uvrgw_conf_need_timeout()) must not be an input
+ * without @c stale_timeout.
+ *
+ * @return  0 if the config is valid, -1 otherwise.
+ */
+static int check_dispatchers(void) {
+  UVRGW_CONF_VAL_DISPATCH_T *dp;
+
+  for (dp = disp; dp != NULL; dp = dp->next) {
+    if (dp->producer == NULL) {
+      syslog(LOG_ERR, "value '%s' is not produced by any module.", dp->name);
+      return -1;
+    }
+
+    if (dp->timeout_reader != NULL && dp->producer_input && dp->stale_timeout == 0) {
+      syslog(LOG_ERR, "value '%s' of %s has no stale_timeout, but is read by %s.", dp->name, dp->producer, dp->timeout_reader);
+      return -1;
+    }
+  }
+
   return 0;
 }
 
