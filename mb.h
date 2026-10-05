@@ -70,6 +70,7 @@ typedef struct MB_SLAVE_VAL {
 
   bool write_pending;        /**< True when a new output value is queued for writing. */
   double write_value;        /**< Queued output value (valid when @c write_pending is true). */
+  bool write_failed;         /**< Last write failed (for state logging). */
 
   const char *sf_name;       /**< Name of the scale-factor companion register, or NULL. */
   struct MB_SLAVE_VAL *sf_source; /**< Resolved pointer to the scale-factor source value. */
@@ -89,6 +90,7 @@ typedef struct MB_BLOCK {
   int expect_reg;            /**< Register index (in block) to check, -1 = no check. */
   int expect_value;          /**< Expected value of @c expect_reg. */
   bool unexpected;           /**< Last read failed the check (for state logging). */
+  bool read_failed;          /**< Last read failed (for state logging). */
 
   int values_count;          /**< Number of value definitions in this block. */
   struct MB_SLAVE_VAL *values; /**< Array of value definitions. */

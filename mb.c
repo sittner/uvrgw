@@ -763,7 +763,10 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
 
   if (ret < 0) {
     err = errno;
-    syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(err));
+    if (!blk->read_failed) {
+      syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(err));
+      blk->read_failed = true;
+    }
 
     // no response from slave (e.g. timeout, connection lost): skip remaining blocks until next poll
     if (err < MODBUS_ENOBASE) {
@@ -771,6 +774,11 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
       link_error(slave->master);
     }
     return -1;
+  }
+
+  if (blk->read_failed) {
+    syslog(LOG_INFO, "MODBUS block of slave %d (start %d) read again.", slave->id, blk->addr);
+    blk->read_failed = false;
   }
 
   return 1;
@@ -1152,11 +1160,19 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
 
   if (ret < 0) {
     err = errno;
-    syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
+    if (!val->write_failed) {
+      syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
+      val->write_failed = true;
+    }
     if (err < MODBUS_ENOBASE) {
       link_error(master);
     }
     return -1;
+  }
+
+  if (val->write_failed) {
+    syslog(LOG_INFO, "MODBUS value '%s' written to slave %d again.", val->name, slave->id);
+    val->write_failed = false;
   }
 
   return 1;
