@@ -1,8 +1,14 @@
 # Implementation guide: calculated values and control logic (`eval`)
 
 Status: implemented (`eval.c/h`, README section "Calculated values and
-control logic").  Decisions taken during implementation, beyond this
-guide:
+control logic").  The stale data handling of this guide (`max_age`,
+per-value skipping, stale input logging, `init`) was replaced later by
+`doc/simplify_stall.md`: every value is evaluated and published in every
+evaluation, with a valid flag (AND of the inputs' validity and a finite
+result), and `init` is now `init_value`.  Sections 3, 4.4, 4.5 and 7 are
+updated accordingly; the test list (5) and the plan (6) are kept as
+implemented at the time.  Decisions taken during implementation, beyond
+this guide:
 
 - A local value whose name is used outside of the eval (by any module)
   is a config error; it would hide that value in the eval.
@@ -10,11 +16,11 @@ guide:
   would only be evaluated at startup: config error.  A trigger given
   twice is a config error.
 - `if`, `min`, `max`, `clamp` and `hyst` return NaN if an argument is
-  NaN (e.g. `sqrt(-1)`), so the value is skipped instead of hiding it.
-- Logging (4.4): stale and never received inputs are logged once per
-  eval and input ("input 'x' is stale" / "never received" / "valid
-  again"), per value only non-finite results.  Values skipped because of
-  an input or a skipped dependency are not logged individually.
+  NaN (e.g. `sqrt(-1)`), so the result is not finite and the value
+  invalid instead of hiding it.
+- Logging (4.4): only non-finite results are logged, once per state
+  change and value.  Timeouts of inputs are logged by the dispatcher's
+  watchdog (`doc/simplify_stall.md`).
 - tinyexpr is not copied unmodified: it gets `te_is_builtin()` (4.8)
   instead of a copied list of built-in names in `eval.c`.
 - Producer owners are named by module and section: `modbus_tcp '<ip>'`,
@@ -23,7 +29,9 @@ guide:
 - Two periodic evals whose values depend on each other directly (a value
   of A reads a value of B that reads a value of A) never start, since
   each waits for the other's first result.  Only periodic evals where at
-  least one side does not depend on the other run.
+  least one side does not depend on the other run.  No longer applies since
+  values are always evaluated (`doc/simplify_stall.md`): such evals run
+  from the first evaluation, starting from `init_value`.
 
 ## 1. Goal
 
@@ -36,7 +44,6 @@ TA controllers (comparison, hysteresis, timers, logic, scaling, ...).
 ```
 eval solar {
   period  = 1000
-  max_age = 10000
   value diff       { expr = "collector_temp - tank_temp"  local = true }
   value solar_pump { expr = "hyst(solar_pump, diff, 8, 4) && tank_temp < 90" }
   value pump_on_s  { expr = "if(solar_pump, pump_on_s + dt, 0)" }
@@ -104,9 +111,9 @@ Each module provides `*_init()`, `*_configure(cfg)`,
   clear message naming the section/value.
 - Runtime problems are logged once per state change ("... invalid",
   "... valid again"), never per occurrence.
-- Invalid/missing data → value is not published (becomes stale), never a
-  substitute value.  A derived value must not outlive its inputs: if an
-  input is stale, the derived value is not published either.
+- Invalid/missing data → the value is marked invalid, never published as
+  valid.  A derived value must not outlive its inputs: if an input is
+  invalid, the derived value is invalid too.
 - Titled sections that must be unique use `CFGF_NO_TITLE_DUPES`.
 - README: feature line, config section with example and notes,
   architecture overview entry.
@@ -119,12 +126,11 @@ Each module provides `*_init()`, `*_configure(cfg)`,
 eval <name> {
   period   = <ms>                 # evaluate every <ms>
   triggers = {"<value>", ...}     # or: evaluate when one of these values is updated
-  max_age  = <ms>                 # max. age of outside values, default 600000, 0 = no limit
 
   value <value name> {
     expr  = "<expression>"        # required
     local = true                  # optional, default false
-    init  = <number>              # optional, default 0
+    init_value = <number>         # optional, default 0
   }
   ...
 }
@@ -144,18 +150,14 @@ eval <name> {
   not across different ones.
 - `local = true`: the value is private to the eval (no dispatcher, not
   published); the name can be reused in other evals.
-- `init`: value before the first evaluation, for values that read
+- `init_value`: value before the first evaluation, for values that read
   themselves or are read by an earlier `value` of the same eval.
-- `max_age`: a value is not evaluated if an outside value it depends on
-  is older (4.4).  The default (600000 ms = 10 min) matches the default
-  `stale_timeout` of the MQTT logger and is long enough for MQTT sensors
-  that publish rarely; control logic sets a tighter limit.
 
 Config errors: expression syntax error or unknown name (with the position
 reported by tinyexpr), invalid value name, a value name defined twice
 (in the same or another eval), a value name produced by another module
 (4.2), no `value` section, `period` and `triggers` together,
-`period <= 0`, `max_age < 0`, unknown trigger name, trigger naming a value
+`period <= 0`, unknown trigger name, trigger naming a value
 of the same eval, trigger cycle (4.3).
 
 ## 4. Design
@@ -168,7 +170,7 @@ A name in an expression is resolved in this order:
 2. A value of the same eval (local or not): its current state.  A value
    defined further up has the result of this evaluation, the value itself
    and values further down have the result of the previous one (or
-   `init`).
+   `init_value`).
 3. An **outside value**: any other dispatcher name known in the
    configuration, including values of other evals and counters.
 4. An expression function (4.6): the tinyexpr built-ins and the functions
@@ -193,7 +195,8 @@ Therefore:
 
 Unknown names are compile errors, so typos are found at config load.
 "Known" means a dispatcher exists, i.e. any module references the name.
-A name that exists but is never received is reported at runtime (4.4).
+A name that exists but is produced by no module is a config error
+(`doc/simplify_stall.md`).
 
 ### 4.2 Compilation and dependencies
 
@@ -231,7 +234,7 @@ below), transitively; computed once after the walk (fixed point over the
 a value reading the previous state of a value further down would keep
 publishing results from that value's last state after its inputs went
 stale (found in review: `back = later * 2` with `later = y` kept
-publishing after `y` stopped).  The tempting alternative rule "skip if
+publishing after `y` stopped; today: stayed valid).  The tempting alternative rule "skip if
 the value below was skipped last time" deadlocks with feedback between
 values (a reads b below, b reads a above: once a is skipped, b is
 skipped because a was not updated, and a stays skipped because b was).
@@ -286,56 +289,39 @@ is not detected.
 
 Results are published with `uvrgw_conf_disp_val(dp, eval, f)`.  Every
 evaluation publishes all non-local values that were evaluated, also
-unchanged ones (counters and the logger judge freshness by updates).
+unchanged ones.
 
 ### 4.4 Evaluation
 
-Validity is decided per value, not per eval, so a dead input only stops
-the values that depend on it, and stale inputs never produce fresh
-looking outputs.
+Replaced by `doc/simplify_stall.md` (section 4.9).  Every value is
+evaluated and published in every evaluation:
 
 1. Copy the outside values read by the eval into their slots
-   (`uvrgw_conf_get_val()`) and mark each as valid or invalid: invalid if
-   never received, or older than `max_age` (if not 0).
-2. Evaluate the `value` sections in order.  For each value:
-   - If one of the outside values in its input closure (4.2) is invalid,
-     or one of its own-value dependencies (above it) was not updated in
-     this evaluation: the value is **skipped**.
-   - Otherwise set `dt` (4.5) and evaluate (`te_eval()`).  If the result
-     is not finite (NaN/inf), the value is **skipped**.
-   - Otherwise store the result in the slot of the value; it is
-     **updated**.
-   - A skipped value keeps its previous state in its slot and is not
-     published.  Values further up that read it as previous state get
-     that state only if their own input closure is valid; this happens
-     after a non-finite result (they see the last finite one) and in the
-     first evaluation after a gap (one evaluation late, by definition of
-     reading a value further down).
-3. Publish the updated non-local values.
+   (`uvrgw_conf_get_val()`, which returns the number and the valid flag).
+   An input that has not delivered yet or timed out has its `init_value`.
+2. Evaluate the `value` sections in order: set `dt` (4.5) and evaluate
+   (`te_eval()`).  A finite result is stored in the slot of the value; a
+   non-finite one (NaN/inf) leaves the previous number there.
+3. A value is valid if all outside values in its input closure (4.2) are
+   valid and its result is finite.
+4. Publish all non-local values with their number and validity.
 
 Only the final result of a value is checked, not intermediate results:
 `if(x != 0, a / x, 0)` is a working guard although `if()` evaluates both
 arguments and `a / x` is inf for `x = 0`.
 
-A skipped value is not published, so it becomes stale for its consumers.
-Its dependents in the same eval are skipped in the same evaluation; in
-other evals once it is older than their `max_age`.
+An invalid value is still published: outputs and other evals use its
+number, the logger writes `null`, SunSpec answers with exception 4 and
+counters ignore it.  Its validity only changes when the eval runs.
 
-Logging, once per state change per value: "eval '<e>': value '<v>' not
-evaluated: input '<x>' is stale" / "... result is not finite" / "... '<u>'
-not evaluated" (dependency) and "eval '<e>': value '<v>' valid again".
-Log the cause only for the first value of a chain where it makes sense;
-at least avoid logging the same stale input once per dependent value
-(e.g. log stale inputs once per eval and input, and per value only
-non-finite results).  A value never received is reported once after
-`max_age`, or after 10 minutes with `max_age = 0` (as the logger does),
-not at the first skipped evaluation: values are normally missing for a
-moment after startup.
+Logging: a non-finite result once per state change and value ("eval
+'<e>': value '<v>' invalid: result is not finite" / "... finite again").
 
 ### 4.5 `dt`
 
 Seconds (double) since the previous update of the value being evaluated;
-0 for its first evaluation and for the first one after it was skipped.
+0 for its first evaluation and for the first one after a non-finite
+result.
 `dt` is a single slot set before each `te_eval()` (evaluation is
 sequential).  Time dependent expressions use it instead of assuming a
 period, so they work in all modes and do not jump after a gap:
@@ -429,8 +415,8 @@ besides config example and options:
 - evaluation modes and default triggers,
 - names in expressions (4.1), including the rule that outside values
   named like a function or `dt` cannot be used,
-- per-value validity and `max_age` (4.4): a value whose inputs are stale
-  is not published, dependents are skipped too,
+- per-value validity (4.4): a value whose inputs are invalid is published
+  as invalid,
 - operators, precedence and functions (4.6), including the guard example
   `if(x != 0, a / x, 0)` and that only the final result of a value is
   checked for NaN/inf,
@@ -504,13 +490,9 @@ Test cases:
 
 ## 7. Decisions and limits
 
-- `max_age` defaults to 600000 ms (10 min).  A derived value must not be
-  published from stale inputs, otherwise consumers (logger, counters)
-  treat it as fresh.  Because validity is per value (4.4), a stale input
-  only stops the values depending on it, so a default limit does not
-  stop unrelated outputs of the eval.  `max_age = 0` disables the check
-  for evals that intentionally use the last known value.
-- State is lost on restart (values start at `init`).  Accepted for now;
+- Validity is per value (4.4) and follows the inputs' validity; there is
+  no own age limit (`max_age` was removed, `doc/simplify_stall.md`).
+- State is lost on restart (values start at `init_value`).  Accepted for now;
   persistence via `state_dir` only if a use case needs it.
 - If uvrgw stops, outputs keep their last state.  Safety limits (e.g.
   tank over-temperature) stay in the controller.

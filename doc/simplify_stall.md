@@ -1,7 +1,7 @@
 # Implementation guide: simplify stalled data handling
 
-Status: steps 1–7 of section 7 implemented; deviations from this guide
-are listed in section 9.
+Status: implemented (all steps of section 7); deviations from this
+guide are listed in section 9.
 
 ## 1. Goal
 
@@ -352,7 +352,7 @@ Behaviour changes worth stating in the README:
 
 ## 7. Plan
 
-One commit each, every step building (steps 1–7 done, see section 9):
+One commit each, every step building (all done, see section 9):
 
 1. Dispatcher: `valid` flag, `init_value`/`stale_timeout`/producer `val`
    in `uvrgw_conf_set_producer()`, validity parameter on
@@ -546,7 +546,15 @@ Step 7 (config checks):
   and the check in `check_dispatchers()` stay unchanged; the counter's
   registration of an `integrate_power` source stays as well.
 
-Interim state until step 9: the README still documents the removed
-options (`stale_timeout` of logger and SunSpec, `max_gap`, `max_age`,
-eval `init`), and the production config does not load, because it still
-uses them.
+Step 9 (docs and production config):
+
+- README: new configuration section "Stalled data" (options,
+  inheritance, required timeouts, removed options); logger, counter,
+  eval, SunSpec and architecture sections adapted.
+- `doc/eval.md` is kept as the record of the eval implementation; its
+  status names this guide, and sections 3, 4.4, 4.5 and 7 describe the
+  current behaviour.
+- Production config: `stale_timeout = 10000` on the SunSpec power
+  sources (`hp_p1..3`, `bev_p1..3`, `goe_power`) and `360000` on the
+  `integrate_power` sources (`power_radi`, `power_hp`,
+  `heater_power_in`); no other value has one.
