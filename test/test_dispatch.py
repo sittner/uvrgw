@@ -266,7 +266,8 @@ modbus_tcp {{
         n += 1
         js.data = dict(p=n)
         u.wait_log(r"MODBUS value 'p' written to slave 1 again")
-        assert len(dev.writes) > 0 and dev.writes[-1] == (10, [n])
+        # the retried old value may be written first
+        wait_until(lambda: len(dev.writes) > 0 and dev.writes[-1] == (10, [n]), 5, 'write of the new value')
         u.stop()
         assert len(u.find('Failed to write MODBUS value')) == 1, u.find('Failed to write MODBUS value')
 
