@@ -132,7 +132,7 @@ typedef struct MB_MASTER {
   int slaves_count;          /**< Number of slave definitions. */
   struct MB_SLAVE *slaves;   /**< Array of slave definitions. */
 
-  modbus_t *ctx;             /**< libmodbus context (open while thread is running). */
+  modbus_t *ctx;             /**< libmodbus context (connected on demand by the thread). */
   pthread_mutex_t write_lock; /**< Mutex serialising write_schedule() vs the polling thread. */
 
   pthread_t thread;          /**< Polling thread handle. */
@@ -142,8 +142,8 @@ typedef struct MB_MASTER {
   int slave_curr_idx;        /**< Index of the slave currently being serviced. */
 
   bool tcp;                  /**< True for TCP masters (connection handled on demand). */
-  bool reconnect;            /**< TCP only: connection must be (re)established before the next transaction. */
-  bool connect_failed;       /**< TCP only: last connect attempt failed (suppresses repeated log messages). */
+  bool reconnect;            /**< Connection must be (re)established before the next transaction. */
+  bool connect_failed;       /**< Last connect attempt failed (suppresses repeated log messages). */
 } MB_MASTER_T;
 
 /**

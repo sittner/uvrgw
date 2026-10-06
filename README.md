@@ -431,7 +431,7 @@ modbus_tcp {
 - If a block read fails with a Modbus exception, polling continues with the next block; if the slave does not respond at all, the remaining blocks are skipped until the next poll interval.
 - `interval` is required for every slave (also for slaves with output blocks only) and must be positive.
 - A failed write is kept and retried after the `interval` of the slave, until it succeeds or a newer value arrives.
-- Modbus TCP connections are opened on demand.  If the server is unreachable, the connection is retried every second; after a timeout or I/O error the connection is closed and re-established before the next request.
+- Modbus TCP connections and Modbus RTU serial ports are opened on demand.  If the server is unreachable or the serial device missing (also at startup), opening is retried every second.  A TCP connection is closed and re-established after a timeout or I/O error, a serial port after an I/O error (e.g. USB adapter unplugged).
 - Bitmask outputs are written from a local register image that starts at 0 and is not read back from the device.  Writing one bit therefore also writes all other bits of that register — map every relevant bit of such a register as an output.
 
 ### Persistent counters

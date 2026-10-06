@@ -10,6 +10,7 @@ import json
 import os
 import pty
 import re
+import select
 import shutil
 import signal
 import socket
@@ -475,12 +476,15 @@ class ModbusRtuServer(ModbusRegs):
         self.master, self.slave = pty.openpty()
         self.path = os.ttyname(self.slave)
         self.running = True
-        threading.Thread(target=self._serve, daemon=True).start()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
 
     def _serve(self):
         buf = b''
         while self.running:
             try:
+                if not select.select([self.master], [], [], 0.05)[0]:
+                    continue
                 d = os.read(self.master, 256)
             except OSError:
                 return
@@ -502,9 +506,11 @@ class ModbusRtuServer(ModbusRegs):
                 os.write(self.master, resp + crc16(resp))
 
     def close(self):
-        self.running = False
-        os.close(self.master)
-        os.close(self.slave)
+        if self.running:
+            self.running = False
+            self.thread.join(5)
+            os.close(self.master)
+            os.close(self.slave)
 
 
 def mb_read(port, unit, addr, count):

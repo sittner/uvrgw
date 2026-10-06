@@ -51,6 +51,7 @@ static void unconfigure_master(MB_MASTER_T *master);
 static int master_rtu_startup(MB_RTU_MASTER_T *rtu_master);
 static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master);
 static int master_startup(MB_MASTER_T *master);
+static int master_connect(MB_MASTER_T *master);
 static void master_shutdown(MB_MASTER_T *master);
 static void *master_thread(void *ptr);
 static int master_task(MB_MASTER_T *master, int64_t now);
@@ -60,7 +61,7 @@ static int write_schedule(void *v, double f, bool valid);
 static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_block_bits(MB_BLOCK_T *blk);
 static int read_block_registers(MB_BLOCK_T *blk);
-static void link_error(MB_MASTER_T *master);
+static void link_error(MB_MASTER_T *master, int err);
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double sf);
 static int value_reg_count(int type);
 static uint32_t get_u32(const MB_SLAVE_VAL_T *val, const uint16_t *regs);
@@ -528,37 +529,15 @@ static int master_rtu_startup(MB_RTU_MASTER_T *rtu_master) {
     goto fail1;
   }
 
-  // RTU master is connected the whole time, so open here
-  if (modbus_connect(master->ctx) < 0) {
-    syslog(LOG_ERR, "Could not open modbus device");
-    goto fail1;
-  }
-
-  if (modbus_rtu_set_serial_mode(master->ctx, rtu_master->mode)) {
-    syslog(LOG_ERR, "Could not set modbus RS485 mode");
-    goto fail2;
-  }
-
-  if (modbus_rtu_set_rts(master->ctx, rtu_master->rts)) {
-    syslog(LOG_ERR, "Could not set modbus RTS mode");
-    goto fail2;
-  }
-
-  if (rtu_master->rts_delay >= 0) {
-    if (modbus_rtu_set_rts_delay(master->ctx, rtu_master->rts_delay)) {
-      syslog(LOG_ERR, "Could not set modbus RTS delay");
-      goto fail2;
-    }
-  }
+  // open on demand in master thread (see master_connect())
+  master->reconnect = true;
 
   if (master_startup(master) < 0) {
-    goto fail2;
+    goto fail1;
   }
 
   return 0;
 
-fail2:
-  modbus_close(master->ctx);
 fail1:
   modbus_free(master->ctx);
   master->ctx = NULL;
@@ -580,8 +559,9 @@ static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master) {
     goto fail1;
   }
 
-  // connect on demand in master thread (libmodbus link recovery is not
-  // used, as it retries endlessly while the server is unreachable)
+  // connect on demand in master thread (see master_connect(); libmodbus
+  // link recovery is not used, as it retries endlessly while the server
+  // is unreachable)
   master->reconnect = true;
 
   if (master_startup(master) < 0) {
@@ -668,6 +648,59 @@ static void *master_thread(void *ptr) {
 }
 
 /**
+ * @brief Connect a TCP master or open the serial port of an RTU master.
+ *
+ * A failure is logged once until the connection is established.
+ *
+ * @param master  Master to connect.
+ * @return        0 on success, -1 on error.
+ */
+static int master_connect(MB_MASTER_T *master) {
+  MB_TCP_MASTER_T *tcp_master = (MB_TCP_MASTER_T *) master;
+  MB_RTU_MASTER_T *rtu_master = (MB_RTU_MASTER_T *) master;
+  int err;
+
+  if (modbus_connect(master->ctx) < 0) {
+    goto fail;
+  }
+
+  // RTU: line settings need the open port
+  if (!master->tcp) {
+    if (modbus_rtu_set_serial_mode(master->ctx, rtu_master->mode) < 0 ||
+        modbus_rtu_set_rts(master->ctx, rtu_master->rts) < 0 ||
+        (rtu_master->rts_delay >= 0 && modbus_rtu_set_rts_delay(master->ctx, rtu_master->rts_delay) < 0)) {
+      err = errno;
+      modbus_close(master->ctx);
+      errno = err;
+      goto fail;
+    }
+  }
+
+  if (master->connect_failed) {
+    if (master->tcp) {
+      syslog(LOG_INFO, "Connected to MODBUS TCP server %s:%d", tcp_master->ip, tcp_master->port);
+    } else {
+      syslog(LOG_INFO, "MODBUS RTU device %s opened", rtu_master->interface);
+    }
+    master->connect_failed = false;
+  }
+
+  return 0;
+
+fail:
+  if (!master->connect_failed) {
+    if (master->tcp) {
+      syslog(LOG_WARNING, "Could not connect to MODBUS TCP server %s:%d: %s", tcp_master->ip, tcp_master->port, modbus_strerror(errno));
+    } else {
+      syslog(LOG_WARNING, "Could not open MODBUS RTU device %s: %s", rtu_master->interface, modbus_strerror(errno));
+    }
+    master->connect_failed = true;
+  }
+
+  return -1;
+}
+
+/**
  * @brief Single poll iteration for one master.
  *
  * Advances through slaves and processes one read and one write
@@ -681,23 +714,13 @@ static void *master_thread(void *ptr) {
  */
 static int master_task(MB_MASTER_T *master, int64_t now) {
   MB_SLAVE_T *slave;
-  MB_TCP_MASTER_T *tcp_master;
   int ret;
 
-  // (re)connect TCP master on demand
+  // (re)connect on demand
   if (master->reconnect) {
-    tcp_master = (MB_TCP_MASTER_T *) master;
-    if (modbus_connect(master->ctx) < 0) {
-      if (!master->connect_failed) {
-        syslog(LOG_WARNING, "Could not connect to MODBUS TCP server %s:%d: %s", tcp_master->ip, tcp_master->port, modbus_strerror(errno));
-        master->connect_failed = true;
-      }
+    if (master_connect(master) < 0) {
       master->next_transaction = utl_get_ticks() + MASTER_RECONNECT_DELAY_MS;
       return 0;
-    }
-    if (master->connect_failed) {
-      syslog(LOG_INFO, "Connected to MODBUS TCP server %s:%d", tcp_master->ip, tcp_master->port);
-      master->connect_failed = false;
     }
     master->reconnect = false;
   }
@@ -797,7 +820,7 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
     // no response from slave (e.g. timeout, connection lost): skip remaining blocks until next poll
     if (err < MODBUS_ENOBASE) {
       slave->next_poll = now + slave->interval;
-      link_error(slave->master);
+      link_error(slave->master, err);
     }
     return -1;
   }
@@ -1214,7 +1237,7 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
     pthread_mutex_unlock(&master->write_lock);
 
     if (err < MODBUS_ENOBASE) {
-      link_error(master);
+      link_error(master, err);
     }
     return -1;
   }
@@ -1230,15 +1253,17 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
 /**
  * @brief Handle a transaction without valid response (timeout, I/O error).
  *
- * For TCP masters the connection is closed, so it is re-established
- * before the next transaction (this also discards late responses).
+ * The connection is closed, so it is re-established before the next
+ * transaction: for TCP masters always (this also discards late
+ * responses), for RTU masters unless it was a timeout, which is a slave
+ * not answering and not a problem of the serial port.
  *
  * @param master  Master the failed transaction belongs to.
+ * @param err     errno of the failed transaction.
  */
-static void link_error(MB_MASTER_T *master) {
-  if (master->tcp) {
+static void link_error(MB_MASTER_T *master, int err) {
+  if (master->tcp || err != ETIMEDOUT) {
     modbus_close(master->ctx);
     master->reconnect = true;
   }
 }
-

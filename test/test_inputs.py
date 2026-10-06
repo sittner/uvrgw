@@ -8,6 +8,7 @@ three values:
 The values are forwarded to MQTT outputs out/<name> and logged by a
 logger (1 s) on the same broker.
 """
+import os
 import struct
 import threading
 import time
@@ -206,6 +207,45 @@ mqtt {{
         assert set(sub.payloads('out/a', m)) == {'111'}, sub.payloads('out/a', m)
         assert set(sub.payloads('out/b', m)) == {'222'}, sub.payloads('out/b', m)
         u.stop()
+
+
+def test_modbus_rtu_reopen():
+    """A serial device that disappears is opened again when it is back."""
+    with Env() as env:
+        broker = env.broker()
+        sub = env.mqtt(broker.port, '#')
+        dev = env.modbus_rtu()
+        dev.set(100, [5])
+        link = os.path.join(S.tmp, 'tty-reopen')
+        os.symlink(dev.path, link)
+        u = env.uvrgw('''modbus_rtu {{
+  interface = "{path}"
+  baud = 115200
+  timeout = 200
+  slave {{
+    id = 1
+    interval = 300
+    block {{ dir = in  regtype = reg  addr = 100  count = 1  value a {{ reg = 0  type = u16 }} }}
+  }}
+}}
+mqtt {{
+  host = "127.0.0.1"
+  port = {mqtt}
+  value a {{ dir = out  type = number  topic = "out/a"  fmt = "%.0f" }}
+}}
+'''.format(path=link, mqtt=broker.port))
+        sub.wait_value('out/a', 5)
+        dev.close()
+        os.remove(link)
+        u.wait_log('Failed to read MODBUS block')
+        u.wait_log('Could not open MODBUS RTU device')
+        dev = env.modbus_rtu()
+        dev.set(100, [6])
+        os.symlink(dev.path, link)
+        u.wait_log('MODBUS RTU device .* opened')
+        sub.wait_value('out/a', 6)
+        u.stop()
+        assert len(u.find('Could not open MODBUS RTU device')) == 1, u.find('Could not open')
 
 
 def test_can():
