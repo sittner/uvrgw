@@ -34,7 +34,7 @@ static MQTT_CONN_T *conns;
 
 static int conn_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
-static int send_value(void *v, double f);
+static int send_value(void *v, double f, bool valid);
 static bool parse_payload(const MQTT_VAL_T *val, const char *buf, double *f);
 
 static int conn_startup(MQTT_CONN_T *conn);
@@ -140,7 +140,7 @@ static void message_callback(struct mosquitto *mosq, void *obj, const struct mos
       }
 
       // dispatch value
-      uvrgw_conf_disp_val(val->disp, val, f);
+      uvrgw_conf_disp_val(val->disp, val, f, true);
       return;
     }
   }
@@ -167,6 +167,8 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
   conn->keepalive_period = cfg_getint(cfg, "keepalive_period");
   conn->qos = cfg_getint(cfg, "qos");
   conn->retain = cfg_getbool(cfg, "retain");
+  conn->init_value = cfg_getfloat(cfg, "init_value");
+  conn->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (conn->host == NULL) {
     syslog(LOG_ERR, "mqtt host name not given.");
@@ -225,6 +227,8 @@ static int check_fmt(const char *fmt) {
 
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) child;
+  double init_value;
+  int stale_timeout;
 
   val->conn = (MQTT_CONN_T *) ctx;
 
@@ -244,6 +248,19 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     val->retain = cfg_getbool(cfg, "retain");
   } else {
     val->retain = val->conn->retain;
+  }
+
+  // input timeout options: value setting, else section setting
+  if (cfg_size(cfg, "init_value") > 0) {
+    init_value = cfg_getfloat(cfg, "init_value");
+  } else {
+    init_value = val->conn->init_value;
+  }
+
+  if (cfg_size(cfg, "stale_timeout") > 0) {
+    stale_timeout = cfg_getint(cfg, "stale_timeout");
+  } else {
+    stale_timeout = val->conn->stale_timeout;
   }
 
   if (val->topic == NULL) {
@@ -266,7 +283,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host) < 0) {
+  if (val->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "mqtt", val->conn->host, val, true, init_value, stale_timeout) < 0) {
     return -1;
   }
 
@@ -453,11 +470,12 @@ static void conn_destroy(MQTT_CONN_T *conn) {
  * contact values publishes "CLOSED"/"OPEN"; for number values uses snprintf
  * with the configured format string.
  *
- * @param v  @c MQTT_VAL_T pointer.
- * @param f  Dispatched value.
- * @return   0 on success, -1 on publish error.
+ * @param v      @c MQTT_VAL_T pointer.
+ * @param f      Dispatched value.
+ * @param valid  Validity (unused, outputs write every value).
+ * @return       0 on success, -1 on publish error.
  */
-static int send_value(void *v, double f) {
+static int send_value(void *v, double f, bool valid) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) v;
   MQTT_CONN_T *conn = val->conn;
   char buf[32];

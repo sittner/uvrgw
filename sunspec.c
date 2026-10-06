@@ -63,7 +63,7 @@ typedef struct {
 
 static int server_configure(cfg_t *cfg, void *ctx, void *child);
 static int meter_configure(cfg_t *cfg, void *ctx, void *child);
-static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_SRC_T *src);
+static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_METER_T *meter, SUNSPEC_SRC_T *src, bool power);
 static int str_configure(cfg_t *cfg, const char *key, int max_len, const char **str);
 static int server_startup(SUNSPEC_SERVER_T *server);
 static void server_shutdown(SUNSPEC_SERVER_T *server);
@@ -73,7 +73,7 @@ static void close_client(SUNSPEC_SERVER_T *server, int idx);
 static void handle_client(SUNSPEC_SERVER_T *server, int idx);
 static SUNSPEC_METER_T *find_meter(SUNSPEC_SERVER_T *server, int unit_id);
 static int update_image(SUNSPEC_METER_T *meter);
-static bool src_get(SUNSPEC_SRC_T *src, int64_t min_ts, double *f, const char **stale);
+static bool src_get(SUNSPEC_SRC_T *src, double *f, const char **invalid);
 static double phase_to_phase(double v1, double v2);
 static int put_str(uint16_t *regs, const char *s, int len);
 static int put_f32(uint16_t *regs, double f);
@@ -95,7 +95,6 @@ static int server_configure(cfg_t *cfg, void *ctx, void *child) {
 
   server->bind = uvrgw_conf_strdup(cfg_getstr(cfg, "bind"));
   server->port = cfg_getint(cfg, "port");
-  server->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   server->listen_fd = -1;
   for (i = 0; i < SUNSPEC_MAX_CLIENTS; i++) {
@@ -104,11 +103,6 @@ static int server_configure(cfg_t *cfg, void *ctx, void *child) {
 
   if (server->port <= 0 || server->port > 65535) {
     syslog(LOG_ERR, "sunspec_server port invalid.");
-    return -1;
-  }
-
-  if (server->stale_timeout <= 0) {
-    syslog(LOG_ERR, "sunspec_server stale_timeout invalid.");
     return -1;
   }
 
@@ -156,16 +150,16 @@ static int meter_configure(cfg_t *cfg, void *ctx, void *child) {
   for (ph = 0; ph < SUNSPEC_PHASES; ph++) {
     for (q = 0; q < SUNSPEC_PH_COUNT; q++) {
       snprintf(key, sizeof(key), "%s_l%d", phase_keys[q], ph + 1);
-      if (src_configure(cfg, key, &meter->phase[ph][q]) < 0) {
+      if (src_configure(cfg, key, meter, &meter->phase[ph][q], q == SUNSPEC_PH_POWER) < 0) {
         return -1;
       }
     }
   }
 
-  if (src_configure(cfg, "power", &meter->power) < 0 ||
-      src_configure(cfg, "energy_import", &meter->energy_imp) < 0 ||
-      src_configure(cfg, "energy_export", &meter->energy_exp) < 0 ||
-      src_configure(cfg, "frequency", &meter->frequency) < 0) {
+  if (src_configure(cfg, "power", meter, &meter->power, true) < 0 ||
+      src_configure(cfg, "energy_import", meter, &meter->energy_imp, false) < 0 ||
+      src_configure(cfg, "energy_export", meter, &meter->energy_exp, false) < 0 ||
+      src_configure(cfg, "frequency", meter, &meter->frequency, false) < 0) {
     return -1;
   }
 
@@ -178,7 +172,7 @@ static int meter_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
-static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_SRC_T *src) {
+static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_METER_T *meter, SUNSPEC_SRC_T *src, bool power) {
   src->name = uvrgw_conf_strdup(cfg_getstr(cfg, key));
   if (src->name == NULL) {
     return 0;
@@ -186,6 +180,11 @@ static int src_configure(cfg_t *cfg, const char *key, SUNSPEC_SRC_T *src) {
 
   src->disp = uvrgw_conf_get_dispatcher(src->name, false);
   if (src->disp == NULL) {
+    return -1;
+  }
+
+  // a frozen power would be served as current power
+  if (power && uvrgw_conf_need_timeout(src->disp, "sunspec meter", meter->name) < 0) {
     return -1;
   }
 
@@ -455,7 +454,7 @@ static SUNSPEC_METER_T *find_meter(SUNSPEC_SERVER_T *server, int unit_id) {
  * @brief Rebuild the register image of a meter from the current values.
  *
  * @param meter  Meter to update.
- * @return       0 on success, -1 if a configured source value is stale.
+ * @return       0 on success, -1 if a configured source value is invalid.
  */
 static int update_image(SUNSPEC_METER_T *meter) {
   PHASE_VALS_T ph[SUNSPEC_PHASES];
@@ -463,8 +462,7 @@ static int update_image(SUNSPEC_METER_T *meter) {
   bool has[SUNSPEC_PHASES][SUNSPEC_PH_COUNT];
   double vals[SUNSPEC_PHASES][SUNSPEC_PH_COUNT];
   double f, frequency;
-  const char *stale = NULL;
-  int64_t min_ts;
+  const char *invalid = NULL;
   uint16_t *regs;
   int i, q, n, v_count, vpp_count;
 
@@ -472,11 +470,10 @@ static int update_image(SUNSPEC_METER_T *meter) {
   memset(&tot, 0, sizeof(tot));
 
   // get source values
-  min_ts = utl_get_ticks() - meter->server->stale_timeout;
   for (i = 0; i < SUNSPEC_PHASES; i++) {
     for (q = 0; q < SUNSPEC_PH_COUNT; q++) {
       vals[i][q] = 0.0;
-      has[i][q] = src_get(&meter->phase[i][q], min_ts, &vals[i][q], &stale);
+      has[i][q] = src_get(&meter->phase[i][q], &vals[i][q], &invalid);
     }
   }
 
@@ -539,26 +536,26 @@ static int update_image(SUNSPEC_METER_T *meter) {
 
   // explicitly given totals override the sums
   f = 0.0;
-  if (src_get(&meter->power, min_ts, &f, &stale)) {
+  if (src_get(&meter->power, &f, &invalid)) {
     tot.power = f;
   }
-  if (src_get(&meter->energy_imp, min_ts, &f, &stale)) {
+  if (src_get(&meter->energy_imp, &f, &invalid)) {
     tot.energy_imp = f;
   }
-  if (src_get(&meter->energy_exp, min_ts, &f, &stale)) {
+  if (src_get(&meter->energy_exp, &f, &invalid)) {
     tot.energy_exp = f;
   }
   frequency = 0.0;
-  src_get(&meter->frequency, min_ts, &frequency, &stale);
+  src_get(&meter->frequency, &frequency, &invalid);
 
   if (tot.apparent_power > 0.0) {
     tot.pf = tot.power / tot.apparent_power;
   }
 
   // report state changes
-  if (stale != NULL) {
+  if (invalid != NULL) {
     if (!meter->unavailable) {
-      syslog(LOG_WARNING, "sunspec meter '%s' unavailable: value '%s' is stale.", meter->name, stale);
+      syslog(LOG_WARNING, "sunspec meter '%s' unavailable: value '%s' is invalid.", meter->name, invalid);
       meter->unavailable = true;
     }
     return -1;
@@ -620,26 +617,24 @@ static int update_image(SUNSPEC_METER_T *meter) {
 }
 
 /**
- * @brief Get a source value, checking its age.
+ * @brief Get a source value, checking its validity.
  *
- * @param src     Source reference.
- * @param min_ts  Minimum update time for a valid value.
- * @param f       Output: value (unchanged if not configured or stale).
- * @param stale   Output: set to the source name if the value is stale
- *                (only if not already set, so the first stale value is reported).
- * @return        true if the value is configured and valid.
+ * @param src      Source reference.
+ * @param f        Output: value (unchanged if not configured or invalid).
+ * @param invalid  Output: set to the source name if the value is invalid
+ *                 (only if not already set, so the first invalid value is reported).
+ * @return         true if the value is configured and valid.
  */
-static bool src_get(SUNSPEC_SRC_T *src, int64_t min_ts, double *f, const char **stale) {
+static bool src_get(SUNSPEC_SRC_T *src, double *f, const char **invalid) {
   double v;
-  int64_t ts;
 
   if (src->disp == NULL) {
     return false;
   }
 
-  if (!uvrgw_conf_get_val(src->disp, &v, &ts) || ts < min_ts) {
-    if (*stale == NULL) {
-      *stale = src->name;
+  if (!uvrgw_conf_get_val(src->disp, &v)) {
+    if (*invalid == NULL) {
+      *invalid = src->name;
     }
     return false;
   }

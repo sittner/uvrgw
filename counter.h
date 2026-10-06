@@ -11,11 +11,14 @@
  *    last one, a reset is assumed and the reading itself is added.  With
  *    @c max_power, increases that are implausible for the time since the
  *    last change are treated as glitch: nothing is added and the last
- *    reading is resynchronised.
+ *    reading is resynchronised.  An invalid source value (reset after
+ *    the @c stale_timeout of its input) is ignored, the total stays.
  *
  *  - Power integration (@c integrate_power): the source is a power in W,
  *    which is integrated to Wh.  The last power value is held until the
- *    next one arrives, but for at most @c max_gap.  @c sign selects the
+ *    next one arrives; an invalid source value (reset after the
+ *    @c stale_timeout of its input) stops integration until the next
+ *    power value.  The total is published every second.  @c sign selects the
  *    counted part: positive power (default), or negative power counted as
  *    positive energy (e.g. separate heating and cooling counters of a heat
  *    pump); the other part is counted as 0.
@@ -48,7 +51,6 @@ typedef struct COUNTER {
   const char *source;        /**< Source value name. */
   bool integrate_power;      /**< Integrate source power (W) instead of using a device counter. */
   double max_power;          /**< Plausibility limit in W for device counters; 0 = off. */
-  int max_gap;               /**< Power integration: max. time (ms) to hold a power value. */
   double scale;              /**< Multiplier for the source value. */
   int sign;                  /**< Power integration: counted sign (UVRGW_CONF_COUNTER_SIGN_*). */
 
@@ -67,7 +69,6 @@ typedef struct COUNTER {
 
   bool has_power;            /**< Power integration: a power value has been received. */
   double power;              /**< Power integration: last power value (W). */
-  int64_t power_ts;          /**< Power integration: time (ms) of the last power value. */
   int64_t integrated_ts;     /**< Power integration: time (ms) integrated up to. */
 } COUNTER_T;
 
@@ -100,6 +101,15 @@ void counter_unconfigure(void);
  * @return  0 on success, -1 on error.
  */
 int counter_startup(void);
+
+/**
+ * @brief Publish the totals of all counters that have one.
+ *
+ * A counter loaded from its state file has a valid total before its
+ * source delivers; this dispatches it once.  Call after the outputs are
+ * started.
+ */
+void counter_publish(void);
 
 /**
  * @brief Stop the counter thread.

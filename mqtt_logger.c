@@ -7,7 +7,6 @@
  */
 #include "mqtt_logger.h"
 #include "mqtt.h"
-#include "utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -24,7 +23,6 @@ static bool thread_running;
 static pthread_t thread;
 static MQTT_CONN_T *log_conns;
 static int log_conns_count;
-static int64_t start_ticks;
 
 static int logger_configure(cfg_t *cfg, void *ctx, void *child);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
@@ -49,7 +47,6 @@ static int logger_configure(cfg_t *cfg, void *ctx, void *child) {
   logger->name = uvrgw_conf_strdup(cfg_title(cfg));
   logger->topic = uvrgw_conf_strdup(cfg_getstr(cfg, "topic"));
   logger->interval = cfg_getint(cfg, "interval");
-  logger->stale_timeout = cfg_getint(cfg, "stale_timeout");
   logger->qos = cfg_getint(cfg, "qos");
 
   if (logger->topic == NULL) {
@@ -60,11 +57,6 @@ static int logger_configure(cfg_t *cfg, void *ctx, void *child) {
   // the interval must divide a day, so snapshots are aligned to the clock
   if (logger->interval <= 0 || 86400 % logger->interval != 0) {
     syslog(LOG_ERR, "mqtt logger '%s': interval %d invalid (must divide 86400 s).", logger->name, logger->interval);
-    return -1;
-  }
-
-  if (logger->stale_timeout <= 0) {
-    syslog(LOG_ERR, "mqtt logger '%s': stale_timeout invalid.", logger->name);
     return -1;
   }
 
@@ -162,7 +154,6 @@ int mqtt_logger_startup(MQTT_CONN_T *conns, int conns_count) {
 
   log_conns = conns;
   log_conns_count = conns_count;
-  start_ticks = utl_get_ticks();
 
   for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
     for (logger = conn->loggers, logger_idx = 0; logger_idx < conn->loggers_count; logger++, logger_idx++) {
@@ -295,8 +286,8 @@ static void take_snapshot(MQTT_LOGGER_T *logger, time_t t) {
 /**
  * @brief Build the JSON snapshot of all logged values.
  *
- * Also warns once for values that have never been received within
- * @c stale_timeout after startup (e.g. misspelled value names).
+ * Invalid values and values that are not finite after @c scale are
+ * logged as null.
  *
  * @param logger  Logger.
  * @param t       Snapshot time.
@@ -305,12 +296,10 @@ static void take_snapshot(MQTT_LOGGER_T *logger, time_t t) {
 static char *build_json(MQTT_LOGGER_T *logger, time_t t) {
   MQTT_LOGGER_VAL_T *val;
   int val_idx;
-  int64_t now = utl_get_ticks();
   size_t size, len;
   char *json;
   char num[LOGGER_NUM_LEN];
   double f;
-  int64_t ts;
   bool valid;
 
   // field name + quotes, colon, comma + number
@@ -327,17 +316,10 @@ static char *build_json(MQTT_LOGGER_T *logger, time_t t) {
   len = snprintf(json, size, "{\"time\":%lld", (long long) t);
 
   for (val = logger->values, val_idx = 0; val_idx < logger->values_count; val++, val_idx++) {
-    valid = uvrgw_conf_get_val(val->disp, &f, &ts);
-    if (valid) {
-      val->received = true;
-      f *= val->scale;
-      valid = (now - ts) <= (int64_t) logger->stale_timeout * 1000 && isfinite(f);
-    } else if (!val->received && (now - start_ticks) > (int64_t) logger->stale_timeout * 1000) {
-      syslog(LOG_WARNING, "mqtt logger '%s': value '%s' never received.", logger->name, val->name);
-      val->received = true;
-    }
+    valid = uvrgw_conf_get_val(val->disp, &f);
+    f *= val->scale;
 
-    if (valid) {
+    if (valid && isfinite(f)) {
       // always mark as float, so consumers do not infer an integer type
       snprintf(num, sizeof(num), "%.15g", f);
       if (strpbrk(num, ".eE") == NULL) {

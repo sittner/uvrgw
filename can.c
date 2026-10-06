@@ -53,7 +53,7 @@ static void *iface_thread(void *ptr);
 static int iface_task(CAN_IFACE_T *iface);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
-static int send_value(void *v, double f);
+static int send_value(void *v, double f, bool valid);
 static int send_timestamp(CAN_IFACE_T *iface);
 
 void can_init(void) {
@@ -183,6 +183,8 @@ static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
   iface->interface = uvrgw_conf_strdup(cfg_getstr(cfg, "interface"));
   iface->timestamp_period = cfg_getint(cfg, "timestamp_period");
   iface->send_timeout = cfg_getint(cfg, "send_timeout");
+  iface->init_value = cfg_getfloat(cfg, "init_value");
+  iface->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (iface->interface == NULL) {
     syslog(LOG_ERR, "CAN inteface name not given.");
@@ -234,6 +236,8 @@ static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
  */
 static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_VAL_T *val = (CAN_VAL_T *) child;
+  double init_value;
+  int stale_timeout;
 
   val->frame = (CAN_FRAME_T *) ctx;
 
@@ -242,6 +246,19 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   val->pos = cfg_getint(cfg, "pos");
   val->scale = cfg_getfloat(cfg, "scale");
   val->offset = cfg_getfloat(cfg, "offset");
+
+  // input timeout options: value setting, else section setting
+  if (cfg_size(cfg, "init_value") > 0) {
+    init_value = cfg_getfloat(cfg, "init_value");
+  } else {
+    init_value = val->frame->iface->init_value;
+  }
+
+  if (cfg_size(cfg, "stale_timeout") > 0) {
+    stale_timeout = cfg_getint(cfg, "stale_timeout");
+  } else {
+    stale_timeout = val->frame->iface->stale_timeout;
+  }
 
   if (val->pos < 0) {
     syslog(LOG_ERR, "CAN value '%s' has invalid pos %d.", val->name, val->pos);
@@ -286,7 +303,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
-  if (val->frame->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "can", val->frame->iface->interface) < 0) {
+  if (val->frame->dir == UVRGW_CONF_VAL_DIR_IN && uvrgw_conf_set_producer(val->disp, "can", val->frame->iface->interface, val, true, init_value, stale_timeout) < 0) {
     return -1;
   }
 
@@ -428,7 +445,7 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
       }
 
       // dispatch value
-      uvrgw_conf_disp_val(val->disp, val, f * val->scale + val->offset);
+      uvrgw_conf_disp_val(val->disp, val, f * val->scale + val->offset, true);
     }
   }
 
@@ -552,11 +569,12 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
  * @c send_buf.  Sets @c send_time if not already armed, coalescing
  * multiple updates within the @c send_timeout window.
  *
- * @param v  @c CAN_VAL_T pointer.
- * @param f  Dispatched value.
- * @return   0 on success.
+ * @param v      @c CAN_VAL_T pointer.
+ * @param f      Dispatched value.
+ * @param valid  Validity (unused, outputs write every value).
+ * @return       0 on success.
  */
-static int send_value(void *v, double f) {
+static int send_value(void *v, double f, bool valid) {
   int64_t now;
   CAN_VAL_T *val = (CAN_VAL_T *) v;
   CAN_FRAME_T *frame = val->frame;

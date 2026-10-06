@@ -69,6 +69,8 @@ typedef struct CAN_IFACE {
   const char *interface;   /**< SocketCAN interface name (e.g. "can0"). */
   int timestamp_period;    /**< Interval in ms between NTP timestamp frames; 0 disables. */
   int send_timeout;        /**< Max ms to coalesce outbound value updates before transmitting. */
+  double init_value;       /**< Default @c init_value for all input values of this interface. */
+  int stale_timeout;       /**< Default @c stale_timeout (ms) for all input values of this interface; 0 = never. */
 
   int frames_count;        /**< Number of frame definitions. */
   struct CAN_FRAME *frames; /**< Array of frame definitions. */

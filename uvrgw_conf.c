@@ -12,6 +12,9 @@
  * the per-entry callback arrays are allocated.  The register_disp_cbs
  * functions of each subsystem then fill in the callback arrays for all
  * output values.
+ *
+ * The watchdog thread resets values whose producer has a stale_timeout
+ * and delivered no data within that time (see uvrgw_conf_startup()).
  */
 #include <uvrgw_conf.h>
 
@@ -28,9 +31,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <unistd.h>
 #include <modbus/modbus.h>
 
 #define DEFAULT_STATE_DIR "/var/lib/uvrgw"
+
+#define WATCHDOG_THREAD_PERIOD_US 100000
+#define WATCHDOG_CHECK_MS 1000
 
 typedef struct {
   const char *str;
@@ -49,7 +56,12 @@ static int parse_mb_rtu_rts(cfg_t *cfg, cfg_opt_t *opt, const char *value, void 
 static int parse_counter_sign(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result);
 
+static char *owner_str(const char *module, const char *instance);
+static int check_dispatchers(void);
 static void init_dispatcher(void);
+static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid);
+static void *watchdog_thread(void *ptr);
+static void watchdog_check(UVRGW_CONF_VAL_DISPATCH_T *dp, int64_t now);
 
 static cfg_opt_t mqtt_val_opts[] = {
   CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
@@ -58,6 +70,8 @@ static cfg_opt_t mqtt_val_opts[] = {
   CFG_STR("fmt", NULL, CFGF_NONE),
   CFG_INT("qos", 0, CFGF_NODEFAULT),
   CFG_BOOL("retain", cfg_false, CFGF_NODEFAULT),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -70,7 +84,6 @@ static cfg_opt_t mqtt_logger_val_opts[] = {
 static cfg_opt_t mqtt_logger_opts[] = {
   CFG_STR("topic", NULL, CFGF_NONE),
   CFG_INT("interval", 300, CFGF_NONE),
-  CFG_INT("stale_timeout", 600, CFGF_NONE),
   CFG_INT("qos", 1, CFGF_NONE),
   CFG_SEC("value", mqtt_logger_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
@@ -86,6 +99,8 @@ static cfg_opt_t mqtt_opts[] = {
   CFG_INT("keepalive_period", 300, CFGF_NONE),
   CFG_INT("qos", 0, CFGF_NONE),
   CFG_BOOL("retain", cfg_false, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_SEC("logger", mqtt_logger_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
@@ -95,6 +110,8 @@ static cfg_opt_t json_val_opts[] = {
   CFG_STR("path", NULL, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -105,6 +122,8 @@ static cfg_opt_t json_opts[] = {
   CFG_STR("user", NULL, CFGF_NONE),
   CFG_STR("pwd", NULL, CFGF_NONE),
   CFG_STR("valid_if", NULL, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -114,6 +133,8 @@ static cfg_opt_t can_frame_val_opts[] = {
   CFG_INT("pos", -1, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -128,6 +149,8 @@ static cfg_opt_t can_opts[] = {
   CFG_STR("interface", NULL, CFGF_NONE),
   CFG_INT("timestamp_period", 0, CFGF_NONE),
   CFG_INT("send_timeout", 1000, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("frame", can_frame_opts, CFGF_MULTI),
   CFG_END()
 };
@@ -140,6 +163,8 @@ static cfg_opt_t mb_block_val_opts[] = {
   CFG_FLOAT("offset", 0.0, CFGF_NONE),
   CFG_STR("scale_factor", NULL, CFGF_NONE),
   CFG_BOOL("word_swap", cfg_false, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NODEFAULT),
+  CFG_INT("stale_timeout", 0, CFGF_NODEFAULT),
   CFG_END()
 };
 
@@ -158,6 +183,8 @@ static cfg_opt_t mb_block_opts[] = {
 static cfg_opt_t mb_slave_opts[] = {
   CFG_INT("id", -1, CFGF_NONE),
   CFG_INT("interval", 0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
+  CFG_INT("stale_timeout", 0, CFGF_NONE),
   CFG_SEC("block", mb_block_opts, CFGF_MULTI),
   CFG_END()
 };
@@ -221,7 +248,6 @@ static cfg_opt_t sunspec_meter_opts[] = {
 static cfg_opt_t sunspec_server_opts[] = {
   CFG_STR("bind", "0.0.0.0", CFGF_NONE),
   CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
-  CFG_INT("stale_timeout", 30000, CFGF_NONE),
   CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE),
   CFG_END()
 };
@@ -230,7 +256,6 @@ static cfg_opt_t counter_opts[] = {
   CFG_STR("source", NULL, CFGF_NONE),
   CFG_BOOL("integrate_power", cfg_false, CFGF_NONE),
   CFG_FLOAT("max_power", 0.0, CFGF_NONE),
-  CFG_INT("max_gap", 60000, CFGF_NONE),
   CFG_FLOAT("scale", 1.0, CFGF_NONE),
   CFG_INT_CB("sign", UVRGW_CONF_COUNTER_SIGN_POSITIVE, CFGF_NONE, parse_counter_sign),
   CFG_END()
@@ -239,14 +264,13 @@ static cfg_opt_t counter_opts[] = {
 static cfg_opt_t eval_val_opts[] = {
   CFG_STR("expr", NULL, CFGF_NONE),
   CFG_BOOL("local", cfg_false, CFGF_NONE),
-  CFG_FLOAT("init", 0.0, CFGF_NONE),
+  CFG_FLOAT("init_value", 0.0, CFGF_NONE),
   CFG_END()
 };
 
 static cfg_opt_t eval_opts[] = {
   CFG_INT("period", 0, CFGF_NODEFAULT),
   CFG_STR_LIST("triggers", NULL, CFGF_NONE),
-  CFG_INT("max_age", 600000, CFGF_NONE),
   CFG_SEC("value", eval_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
@@ -335,6 +359,9 @@ static const MAP_ITEM_T counter_sign_map[] = {
 
 static UVRGW_CONF_VAL_DISPATCH_T *disp;
 static char *state_dir;
+
+static pthread_t watchdog;
+static bool watchdog_running;
 
 static int parse_map(const MAP_ITEM_T *map, cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
   for (; map->str != NULL; map++) {
@@ -510,6 +537,10 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
+  if (check_dispatchers()) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
   mb_register_disp_cbs();
@@ -546,9 +577,11 @@ void uvrgw_conf_cleanup(void) {
   dp = disp;
   while (dp != NULL) {
     next = dp->next;
+    pthread_mutex_destroy(&dp->disp_lock);
     pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
     free(dp->producer);
+    free(dp->timeout_reader);
     free(dp->value_cbs);
     free(dp);
     dp = next;
@@ -642,6 +675,7 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
       return NULL;
     }
     dp->name = uvrgw_conf_strdup(name);
+    pthread_mutex_init(&dp->disp_lock, NULL);
     pthread_mutex_init(&dp->last_lock, NULL);
 
     // append new dispatcher to list
@@ -662,20 +696,24 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
 /**
  * @brief Register the producer of a value (see header).
  *
- * @param dp        Dispatcher.
- * @param module    Module/section type.
- * @param instance  Section identification.
- * @return          0 on success, -1 on duplicate producer or OOM.
+ * @param dp             Dispatcher.
+ * @param module         Module/section type.
+ * @param instance       Section identification.
+ * @param val            Producer's value pointer.
+ * @param input          True for input values.
+ * @param init_value     Start and reset value.
+ * @param stale_timeout  Timeout in ms; 0 = never.
+ * @return               0 on success, -1 on duplicate producer or OOM.
  */
-int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance) {
+int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance,
+                            void *val, bool input, double init_value, int stale_timeout) {
   char *owner;
 
-  owner = malloc(strlen(module) + strlen(instance) + 4);
+  owner = owner_str(module, instance);
   if (owner == NULL) {
     syslog(LOG_ERR, "Failed to allocate producer of value '%s'.", dp->name);
     return -1;
   }
-  sprintf(owner, "%s '%s'", module, instance);
 
   if (dp->producer != NULL) {
     syslog(LOG_ERR, "value '%s' of %s is already produced by %s.", dp->name, owner, dp->producer);
@@ -683,7 +721,93 @@ int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, c
     return -1;
   }
 
+  if (!isfinite(init_value)) {
+    syslog(LOG_ERR, "value '%s' of %s: init_value invalid.", dp->name, owner);
+    free(owner);
+    return -1;
+  }
+
+  if (stale_timeout < 0) {
+    syslog(LOG_ERR, "value '%s' of %s: stale_timeout invalid.", dp->name, owner);
+    free(owner);
+    return -1;
+  }
+
   dp->producer = owner;
+  dp->producer_val = val;
+  dp->producer_input = input;
+  dp->init_value = init_value;
+  dp->stale_timeout = stale_timeout;
+  dp->last_value = init_value;
+  return 0;
+}
+
+/**
+ * @brief Register a reader that needs a value without stale data (see header).
+ *
+ * Only the first reader is kept, for the error message.
+ *
+ * @param dp        Dispatcher.
+ * @param module    Reader's module/section type.
+ * @param instance  Reader's section identification.
+ * @return          0 on success, -1 on OOM.
+ */
+int uvrgw_conf_need_timeout(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance) {
+  if (dp->timeout_reader != NULL) {
+    return 0;
+  }
+
+  dp->timeout_reader = owner_str(module, instance);
+  if (dp->timeout_reader == NULL) {
+    syslog(LOG_ERR, "Failed to allocate reader of value '%s'.", dp->name);
+    return -1;
+  }
+
+  return 0;
+}
+
+/**
+ * @brief Format a module and instance as "module 'instance'".
+ *
+ * @param module    Module/section type.
+ * @param instance  Section identification.
+ * @return          Newly allocated string, or NULL on OOM.
+ */
+static char *owner_str(const char *module, const char *instance) {
+  char *s;
+
+  s = malloc(strlen(module) + strlen(instance) + 4);
+  if (s != NULL) {
+    sprintf(s, "%s '%s'", module, instance);
+  }
+
+  return s;
+}
+
+/**
+ * @brief Check the producers of all names after configuration.
+ *
+ * Every name needs a producer, and a name read by a module that needs
+ * current data (see uvrgw_conf_need_timeout()) must not be an input
+ * without @c stale_timeout.
+ *
+ * @return  0 if the config is valid, -1 otherwise.
+ */
+static int check_dispatchers(void) {
+  UVRGW_CONF_VAL_DISPATCH_T *dp;
+
+  for (dp = disp; dp != NULL; dp = dp->next) {
+    if (dp->producer == NULL) {
+      syslog(LOG_ERR, "value '%s' is not produced by any module.", dp->name);
+      return -1;
+    }
+
+    if (dp->timeout_reader != NULL && dp->producer_input && dp->stale_timeout == 0) {
+      syslog(LOG_ERR, "value '%s' of %s has no stale_timeout, but is read by %s.", dp->name, dp->producer, dp->timeout_reader);
+      return -1;
+    }
+  }
+
   return 0;
 }
 
@@ -734,58 +858,192 @@ int uvrgw_conf_register_disp_cb(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, UVRGW_
 /**
  * @brief Store the value and fire all output callbacks, excluding the source.
  *
- * NaN (invalid reading) is dropped.
+ * Non-finite values are dropped.
  *
- * @param dp   Dispatcher.
- * @param val  Source value pointer (excluded from delivery).
- * @param f    Dispatched value.
+ * @param dp     Dispatcher.
+ * @param val    Source value pointer (excluded from delivery).
+ * @param f      Dispatched value.
+ * @param valid  True for current data.
  */
-void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f) {
-  int i;
-  UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;
-
-  // drop invalid readings
-  if (isnan(f)) {
+void uvrgw_conf_disp_val(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid) {
+  // keep the stored value finite
+  if (!isfinite(f)) {
     return;
   }
+
+  pthread_mutex_lock(&dp->disp_lock);
 
   // remember last value
   pthread_mutex_lock(&dp->last_lock);
   dp->last_value = f;
-  dp->last_update = utl_get_ticks();
-  dp->updated = true;
+  dp->valid = valid;
   pthread_mutex_unlock(&dp->last_lock);
+
+  if (valid) {
+    dp->received = true;
+
+    // re-arm the watchdog
+    if (dp->stale_timeout > 0) {
+      dp->deadline = utl_get_ticks() + dp->stale_timeout;
+    }
+    if (dp->timed_out) {
+      syslog(LOG_INFO, "value '%s' received again.", dp->name);
+      dp->timed_out = false;
+    }
+  }
+
+  fire_cbs(dp, val, f, valid);
+
+  pthread_mutex_unlock(&dp->disp_lock);
+}
+
+/**
+ * @brief Call all output callbacks of @p dp except the one of @p val
+ *        (called with @c disp_lock held).
+ *
+ * @param dp     Dispatcher.
+ * @param val    Source value pointer (excluded from delivery).
+ * @param f      Dispatched value.
+ * @param valid  Validity.
+ */
+static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid) {
+  int i;
+  UVRGW_CONF_DISPATCH_CB_VAL_T *cbv;
 
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {
       // TODO: handle error
-      cbv->cb(cbv->val, f);
+      cbv->cb(cbv->val, f, valid);
     }
   }
 }
 
 /**
- * @brief Read the last dispatched value and its update time.
+ * @brief Read the current value and its validity.
  *
  * @param dp  Dispatcher.
- * @param f   Output: last value.
- * @param ts  Output: monotonic update time in ms (may be NULL).
- * @return    true if a value has been dispatched.
+ * @param f   Output: current value.
+ * @return    true if the value is valid.
  */
-bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f, int64_t *ts) {
-  bool updated;
+bool uvrgw_conf_get_val(UVRGW_CONF_VAL_DISPATCH_T *dp, double *f) {
+  bool valid;
 
   pthread_mutex_lock(&dp->last_lock);
-  updated = dp->updated;
-  if (updated) {
-    *f = dp->last_value;
-    if (ts != NULL) {
-      *ts = dp->last_update;
-    }
-  }
+  valid = dp->valid;
+  *f = dp->last_value;
   pthread_mutex_unlock(&dp->last_lock);
 
-  return updated;
+  return valid;
+}
+
+/**
+ * @brief Arm the timeouts and start the watchdog thread (see header).
+ *
+ * @return  0 on success, -1 if the thread could not be started.
+ */
+int uvrgw_conf_startup(void) {
+  UVRGW_CONF_VAL_DISPATCH_T *dp;
+  int64_t now = utl_get_ticks();
+  bool needed = false;
+
+  // names that already delivered data are armed by their dispatch
+  for (dp = disp; dp != NULL; dp = dp->next) {
+    if (dp->stale_timeout > 0) {
+      pthread_mutex_lock(&dp->disp_lock);
+      if (dp->deadline == 0) {
+        dp->deadline = now + dp->stale_timeout;
+      }
+      pthread_mutex_unlock(&dp->disp_lock);
+      needed = true;
+    }
+  }
+
+  if (!needed) {
+    return 0;
+  }
+
+  watchdog_running = true;
+  if (pthread_create(&watchdog, NULL, watchdog_thread, NULL) != 0) {
+    watchdog_running = false;
+    syslog(LOG_ERR, "failed to start watchdog thread");
+    return -1;
+  }
+
+  return 0;
+}
+
+/**
+ * @brief Stop the watchdog thread.
+ */
+void uvrgw_conf_shutdown(void) {
+  if (watchdog_running) {
+    watchdog_running = false;
+    pthread_join(watchdog, NULL);
+  }
+}
+
+/**
+ * @brief Watchdog thread: check all timeouts once per second.
+ *
+ * @param ptr  Unused.
+ * @return     NULL.
+ */
+static void *watchdog_thread(void *ptr) {
+  UVRGW_CONF_VAL_DISPATCH_T *dp;
+  int64_t now;
+  int64_t next_check = 0;
+
+  while (watchdog_running) {
+    now = utl_get_ticks();
+
+    if (now >= next_check) {
+      next_check = now + WATCHDOG_CHECK_MS;
+
+      for (dp = disp; dp != NULL; dp = dp->next) {
+        if (dp->stale_timeout > 0) {
+          watchdog_check(dp, now);
+        }
+      }
+    }
+
+    usleep(WATCHDOG_THREAD_PERIOD_US);
+  }
+
+  return NULL;
+}
+
+/**
+ * @brief Reset a value whose deadline has expired to its @c init_value,
+ *        mark it invalid and dispatch the reset once.
+ *
+ * The deadline is checked under @c disp_lock, so real data dispatched
+ * meanwhile wins.
+ *
+ * @param dp   Dispatcher with a @c stale_timeout.
+ * @param now  Current monotonic time (ms).
+ */
+static void watchdog_check(UVRGW_CONF_VAL_DISPATCH_T *dp, int64_t now) {
+  pthread_mutex_lock(&dp->disp_lock);
+
+  if (dp->deadline != 0 && now >= dp->deadline) {
+    dp->deadline = 0;
+    dp->timed_out = true;
+
+    pthread_mutex_lock(&dp->last_lock);
+    dp->last_value = dp->init_value;
+    dp->valid = false;
+    pthread_mutex_unlock(&dp->last_lock);
+
+    if (dp->received) {
+      syslog(LOG_WARNING, "value '%s' timed out, reset to %g.", dp->name, dp->init_value);
+    } else {
+      syslog(LOG_WARNING, "value '%s' never received, set to %g.", dp->name, dp->init_value);
+    }
+
+    fire_cbs(dp, dp->producer_val, dp->init_value, false);
+  }
+
+  pthread_mutex_unlock(&dp->disp_lock);
 }
 
 /**
