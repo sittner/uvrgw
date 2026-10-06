@@ -1,0 +1,6 @@
+#!/bin/sh
+# Reset the boot attempts of the booted slot (see boot.cmd).
+
+slot=$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)
+[ -n "${slot}" ] || exit 1
+fw_setenv "BOOT_${slot}_LEFT" 3

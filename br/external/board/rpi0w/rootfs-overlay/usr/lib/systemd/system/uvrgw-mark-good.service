@@ -1,0 +1,11 @@
+[Unit]
+Description=Mark the booted slot good (U-Boot boot attempts)
+Requires=uvrgw.service
+After=uvrgw.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/uvrgw-mark-good
+
+[Install]
+WantedBy=multi-user.target

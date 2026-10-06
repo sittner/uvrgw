@@ -1,4 +1,5 @@
 enable uvrgw.service
+enable uvrgw-mark-good.service
 enable dropbear.service
 enable wpa_supplicant@.service wlan0
 disable wpa_supplicant.service

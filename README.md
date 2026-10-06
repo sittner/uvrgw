@@ -104,12 +104,21 @@ Any other Buildroot target can be given the same way (`make -C br menuconfig`, `
 **Hardware** (`br/external/board/rpi0w/config.txt`):
 - CAN: MCP2515 on SPI0, interrupt GPIO25, `can0` at 50 kbit/s (`can0.network`).  The `oscillator` of the `mcp2515-can0` overlay must match the crystal on the HAT (8 MHz on boards before 08/2019, 12 MHz on newer ones).
 - RS485: `/dev/ttyAMA0` (PL011 on GPIO14/15, Bluetooth disabled).  Direction (RSE) on GPIO4, set low (receive) at boot.
-- Console: USB serial gadget on the USB OTG port (`ttyGS0`, kernel messages and login as `root` without password); power the board through the PWR port.  SSH (dropbear) with key login for `root`.
-- Hardware watchdog via systemd (`RuntimeWatchdogSec=14`).
+- Console: USB serial gadget on the USB OTG port (`ttyGS0`, kernel messages and login as `root` without password); power the board through the PWR port.  SSH (dropbear) with key login for `root`.  U-Boot has no console (its UART is the RS485 bus; output only goes to GPIO14 while the transceiver is in receive mode).
+- Hardware watchdog: started by U-Boot, kept by the kernel until systemd takes over (`RuntimeWatchdogSec=14`).
 
-**SD card layout** (`genimage.cfg`), prepared for A/B updates with the RPi firmware `autoboot.txt`/`tryboot` mechanism: p1 `autoboot.txt` (selects p2), p2/p3 boot partitions A/B (firmware, kernel, `config.txt`, `cmdline.txt` with `root=` p5/p6), p5/p6 squashfs root A/B, p7 ext4 data on `/data`.  The image fills both slots.
+**SD card layout** (`genimage.cfg`):
 
-**Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  After flashing, mount p7 and add:
+| Partition | Content |
+|---|---|
+| 0–4 MiB | MBR, U-Boot environment (two copies at 1 MiB and 2 MiB) |
+| p1 `boot` (vfat) | RPi firmware, `config.txt`, DT and overlays, U-Boot, `boot.scr`; not written in operation |
+| p2 / p3 | root slots A / B (squashfs, kernel in `/boot`); the image fills both |
+| p4 `data` (ext4) | `/data`: configuration, credentials, state |
+
+**Slot selection** (`boot.cmd`, the RAUC U-Boot scheme): `BOOT_ORDER` (default `A B`) lists the slots, `BOOT_A_LEFT` / `BOOT_B_LEFT` (default 3) the remaining attempts.  Each boot uses one attempt of the first slot with attempts left and passes `root=` and `rauc.slot=` to the kernel; after three failed boots (panic, watchdog reset, missing kernel) U-Boot boots the other slot.  Once uvrgw is started, `uvrgw-mark-good.service` resets the attempts of the booted slot.  The environment is written power-safe (redundant copies); `fw_printenv` / `fw_setenv` access it from Linux.
+
+**Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  After flashing, mount p4 and add:
 
 | File | Content |
 |---|---|

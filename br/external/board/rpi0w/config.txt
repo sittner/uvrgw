@@ -1,11 +1,7 @@
 # uvrgw: Raspberry Pi Zero W with Waveshare RS485 CAN HAT, no graphics
-# (identical in both boot partitions)
 
-start_file=start_cd.elf
-fixup_file=fixup_cd.dat
-gpu_mem=16
-
-kernel=zImage
+# U-Boot selects the root slot and loads the kernel from it
+kernel=u-boot.bin
 
 # RS485 on UART0 (PL011, /dev/ttyAMA0, GPIO14/15), Bluetooth disabled
 dtoverlay=disable-bt
@@ -20,6 +16,3 @@ dtoverlay=mcp2515-can0,oscillator=8000000,interrupt=25
 
 # USB OTG port in device mode: serial console on ttyGS0
 dtoverlay=dwc2,dr_mode=peripheral
-
-# hardware watchdog (systemd RuntimeWatchdogSec, tryboot fallback)
-dtparam=watchdog=on

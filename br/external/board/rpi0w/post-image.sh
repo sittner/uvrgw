@@ -7,9 +7,6 @@ set -e
 BOARD_DIR="$(dirname "$0")"
 GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 
-cp "${BOARD_DIR}/autoboot.txt" "${BOARD_DIR}/cmdline-a.txt" \
-	"${BOARD_DIR}/cmdline-b.txt" "${BINARIES_DIR}/"
-
 # empty rootpath: the data partition starts empty, the other images are
 # prebuilt
 ROOTPATH_TMP="$(mktemp -d)"
