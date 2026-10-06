@@ -91,7 +91,7 @@ static cfg_opt_t mqtt_logger_opts[] = {
 };
 
 static cfg_opt_t mqtt_opts[] = {
-  CFG_STR("host", "localhost", CFGF_NONE),
+  CFG_STR("host", NULL, CFGF_NONE),
   CFG_INT("port", 1883, CFGF_NONE),
   CFG_STR("client_id", NULL, CFGF_NONE),
   CFG_STR("user", NULL, CFGF_NONE),

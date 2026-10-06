@@ -139,7 +139,8 @@ def test_config_checks():
         (tcp(block('value t { reg = 0  type = s16 }').replace('id = 1', 'id = 248')), r"modbus slave id 248 not given or invalid\."),
         ('modbus_rtu {\n  interface = "/dev/null"\n  slave {\n    %s\n  }\n}\n' % block('value t { reg = 0  type = s16 }').replace('id = 1', 'id = 0'),
          r"modbus slave id 0 not given or invalid\."),
-        # required options of every module (mqtt host defaults to localhost)
+        # required options of every module
+        (MQTT.replace('host = "127.0.0.1"\n', '') % '', r"mqtt host name not given\."),
         (MQTT % 'value t { dir = out  type = number  topic = "o" }', r"mqtt value 't': fmt not given\."),
         (MQTT % 'logger log {\n    value t { }\n  }', r"mqtt logger 'log': topic not given\."),
         ('can {\n  frame {\n    can_id = 0x123\n    dir = out\n    value t { type = u8  pos = 0 }\n  }\n}\n', r"CAN interface name not given\."),
