@@ -12,6 +12,10 @@ GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 ROOTPATH_TMP="$(mktemp -d)"
 trap 'rm -rf "${ROOTPATH_TMP}"' EXIT
 
+# own DT overlays
+dtc -@ -I dts -O dtb -o "${BINARIES_DIR}/rpi-firmware/overlays/uart-rts.dtbo" \
+	"${BOARD_DIR}/uart-rts-overlay.dts"
+
 rm -rf "${GENIMAGE_TMP}"
 
 genimage \

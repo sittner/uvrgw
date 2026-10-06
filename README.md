@@ -102,9 +102,9 @@ make -C br uvrgw-rebuild all  # after changing uvrgw sources
 Any other Buildroot target can be given the same way (`make -C br menuconfig`, `linux-menuconfig`, ...); `O=<dir>` puts the build elsewhere.
 
 **Hardware** (`br/external/board/rpi0w/config.txt`):
-- CAN: MCP2515 on SPI0, interrupt GPIO25, `can0` at 50 kbit/s (`can0.network`).  The `oscillator` of the `mcp2515-can0` overlay must match the crystal on the HAT (8 MHz on boards before 08/2019, 12 MHz on newer ones).
-- RS485: `/dev/ttyAMA0` (PL011 on GPIO14/15, Bluetooth disabled).  Direction (RSE) on GPIO4, set low (receive) at boot.
-- Console: USB serial gadget on the USB OTG port (`ttyGS0`, kernel messages and login as `root` without password); power the board through the PWR port.  SSH (dropbear) with key login for `root`.  U-Boot has no console (its UART is the RS485 bus; output only goes to GPIO14 while the transceiver is in receive mode).
+- CAN: MCP2515 on SPI0, interrupt GPIO25, `can0` at 50 kbit/s (`can0.network`).  The `oscillator` of the `mcp2515-can0` overlay must match the crystal on the HAT (12 MHz; 8 MHz on boards before 08/2019).
+- RS485: `/dev/ttyAMA0` (PL011 on GPIO14/15, Bluetooth disabled).  Direction (RSE) on the UART0 RTS signal (GPIO17, overlay `uart-rts-overlay.dts`), switched by uvrgw (`mode = rs485`, `rts`).
+- Console: USB serial gadget on the USB OTG port (`ttyGS0`, kernel messages and login as `root` without password); power the board through the PWR port.  SSH (dropbear) with key login for `root`.  U-Boot has no console (its UART is the RS485 bus).
 - Hardware watchdog: started by U-Boot, kept by the kernel until systemd takes over (`RuntimeWatchdogSec=14`).
 
 **SD card layout** (`genimage.cfg`):
