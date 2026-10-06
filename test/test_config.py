@@ -139,10 +139,27 @@ def test_config_checks():
         (tcp(block('value t { reg = 0  type = s16 }').replace('id = 1', 'id = 248')), r"modbus slave id 248 not given or invalid\."),
         ('modbus_rtu {\n  interface = "/dev/null"\n  slave {\n    %s\n  }\n}\n' % block('value t { reg = 0  type = s16 }').replace('id = 1', 'id = 0'),
          r"modbus slave id 0 not given or invalid\."),
+        # required options of every module (mqtt host defaults to localhost)
+        (MQTT % 'value t { dir = out  type = number  topic = "o" }', r"mqtt value 't': fmt not given\."),
+        (MQTT % 'logger log {\n    value t { }\n  }', r"mqtt logger 'log': topic not given\."),
+        ('can {\n  frame {\n    can_id = 0x123\n    dir = out\n    value t { type = u8  pos = 0 }\n  }\n}\n', r"CAN interface name not given\."),
+        ('modbus_rtu {\n  slave {\n    %s\n  }\n}\n' % block('value t { reg = 0  type = s16 }'), r"modbus_rtu interface name not given\."),
+        (tcp(block('value t { reg = 0  type = s16 }')).replace('ip = "127.0.0.1"\n', ''), r"modbus_tcp ip not given\."),
+        (tcp(block('value t { reg = 0  type = s16 }', 'dir = out  regtype = reg  count = 1')), r"modbus slave 1: block addr not given\."),
+        (tcp(block('value t { reg = 0  type = s16 }', 'regtype = reg  addr = 0  count = 1')), r"modbus slave 1 block \(addr 0\): dir not given\."),
+        (tcp(block('value t { reg = 0  type = s16 }', 'dir = out  regtype = reg  addr = 0')), r"modbus slave 1 block \(addr 0\): count not given or invalid\."),
+        (tcp(block('value t { reg = 0 }')), r"modbus value 't' type not given\."),
+        (meter().replace('unit_id = 1  ', ''), r"sunspec meter 'm' unit_id not given or invalid\."),
+        ('counter c { }\n', r"counter 'c': source not given\."),
+        ('eval e {\n  value s { }\n}\n', r"eval 'e': value 's': expr not given\."),
     ]
     for conf, pattern in cases:
         errs = load(JSON + conf)
         assert re.search(pattern, errs[0]), (conf, errs)
+    errs = load(JSON.replace('url = "http://127.0.0.1:1/x"\n', ''))
+    assert re.search(r"json url name not given\.", errs[0]), errs
+    errs = load(JSON.replace('value t { path = "t" }', 'value t { }'))
+    assert re.search(r"json value 't': path not given\.", errs[0]), errs
 
 
 def test_duplicate_titles():

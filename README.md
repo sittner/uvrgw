@@ -61,7 +61,7 @@ sudo make install
 make test
 ```
 
-The test suite (`test/`, Python 3 standard library only) runs the built binary against local fakes of every device type: a mosquitto broker, a JSON HTTP server, Modbus TCP and Modbus RTU (on a pty) devices, CAN on a `vcan0` interface and Modbus TCP reads of the SunSpec meters.  It covers the config checks, `stale_timeout` / `init_value` inheritance of all input sections, timeouts and recovery of every input type, the consumers (logger, SunSpec, counters, eval), outputs, MQTT loopback and resets racing with real data.  If `uvrgw.conf` exists in the source directory, it is loaded and run as well, with all connections redirected to the local fakes.
+The test suite (`test/`, Python 3 standard library only) runs the built binary against local fakes of every device type: a mosquitto broker, a JSON HTTP server, Modbus TCP and Modbus RTU (on a pty) devices, CAN on a `vcan0` interface and Modbus TCP reads of the SunSpec meters.  It covers the config checks, `stale_timeout` / `init_value` inheritance of all input sections, timeouts and recovery of every input type, the consumers (logger, SunSpec register map and client limit, counters, eval), outputs, MQTT loopback, device failures and resets racing with real data.  If `uvrgw.conf` exists in the source directory, it is loaded and run as well, with all connections redirected to the local fakes.
 
 Requirements: `gcc`, `python3`, `mosquitto` (the broker binary, not running as a service is fine), `valgrind` for `--valgrind`, and for the CAN tests a virtual CAN interface (skipped without it):
 

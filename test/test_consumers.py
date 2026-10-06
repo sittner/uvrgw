@@ -1,9 +1,13 @@
-"""Consumers of invalid values: SunSpec, counters, eval (and the logger)."""
+"""Consumers: SunSpec meters, counters, eval (and the logger)."""
+import math
 import os
+import socket
+import struct
+import subprocess
 import tempfile
 import time
 
-from uvrgwtest import Env, S, free_port, sunspec_power, wait_until
+from uvrgwtest import Env, S, free_port, mb_read, mb_request, regs_f32, sunspec_power, wait_until
 
 LOGGER = '''mqtt {{
   host = "127.0.0.1"
@@ -45,6 +49,102 @@ def test_sunspec():
         u.wait_log(r"sunspec meter 'm' unavailable: value 'p' is invalid", since=lm)
         js.data = dict(p=500, i=5)
         assert wait_until(lambda: sunspec_power(port, 1) == 500, 5, 'power 500')
+        u.stop()
+
+
+def test_sunspec_map():
+    """The whole register map of a three-phase meter: common model
+    strings, measured and derived quantities, explicit total, end model;
+    unknown unit IDs are not answered, other functions and addresses are
+    refused."""
+    phases = [dict(i=10, u=230, p=2000, imp=100, exp=10), dict(i=20, u=230, p=4000, imp=200, exp=20),
+              dict(i=30, u=230, p=6000, imp=300, exp=30)]
+    data = dict(pf1=0.9, f=50, pt=11000)
+    for n, ph in enumerate(phases, 1):
+        data.update({'%s%d' % (k, n): v for k, v in ph.items()})
+    with Env() as env:
+        js = env.json(data)
+        port = free_port()
+        u = env.uvrgw('json {\n  url = "%s"\n  interval = 200\n%s}\n'
+                      'sunspec_server {\n  bind = "127.0.0.1"\n  port = %d\n'
+                      '  meter m {\n    unit_id = 5\n    manufacturer = "modusoft"\n    model = "SmartMeterGW"\n    serial = "00000001"\n'
+                      '    current_l1 = "i1"  voltage_l1 = "u1"  power_l1 = "p1"  pf_l1 = "pf1"  energy_import_l1 = "imp1"  energy_export_l1 = "exp1"\n'
+                      '    current_l2 = "i2"  voltage_l2 = "u2"  power_l2 = "p2"  energy_import_l2 = "imp2"  energy_export_l2 = "exp2"\n'
+                      '    current_l3 = "i3"  voltage_l3 = "u3"  power_l3 = "p3"  energy_import_l3 = "imp3"  energy_export_l3 = "exp3"\n'
+                      '    power = "pt"  frequency = "f"\n  }\n}\n'
+                      % (js.url, ''.join('  value %s { path = "%s" %s }\n' % (k, k, 'stale_timeout = 5000' if k[0] == 'p' and k != 'pf1' else '')
+                                         for k in data), port))
+        assert wait_until(lambda: sunspec_power(port, 5) == 11000, 5, 'meter data')
+        regs = mb_read(port, 5, 40000, 125) + mb_read(port, 5, 40125, 72)
+        assert len(regs) == 197
+
+        def text(off, n):
+            return b''.join(struct.pack('>H', r) for r in regs[off:off + n]).rstrip(b'\0').decode()
+
+        def floats(off, n):
+            return [regs_f32(regs[off + 2 * k:off + 2 * k + 2]) for k in range(n)]
+
+        def close(got, exp):
+            assert len(got) == len(exp) and all(math.isclose(g, e, rel_tol=1e-6, abs_tol=1e-9) for g, e in zip(got, exp)), (got, exp)
+
+        assert text(0, 2) == 'SunS'
+        assert regs[2:4] == [1, 65]
+        assert (text(4, 16), text(20, 16), text(36, 8), text(44, 8), text(52, 16)) == ('modusoft', 'SmartMeterGW', '', '', '00000001')
+        assert regs[68] == 5
+        assert regs[69:71] == [213, 124]
+        s = [ph['u'] * ph['i'] for ph in phases]
+        q = [math.sqrt(s[k] ** 2 - phases[k]['p'] ** 2) for k in range(3)]
+        pf = [0.9] + [phases[k]['p'] / s[k] for k in (1, 2)]
+        vpp = 230 * math.sqrt(3)
+        close(floats(71, 4), [60, 10, 20, 30])                                      # A
+        close(floats(79, 4), [230, 230, 230, 230])                                  # V
+        close(floats(87, 4), [vpp] * 4)                                             # V phase-phase
+        close(floats(95, 1), [50])                                                  # Hz
+        close(floats(97, 4), [11000, 2000, 4000, 6000])                             # W (explicit total)
+        close(floats(105, 4), [sum(s)] + s)                                         # VA
+        close(floats(113, 4), [sum(q)] + q)                                         # VAr
+        close(floats(121, 4), [11000 / sum(s)] + pf)                                # PF
+        close(floats(129, 4), [60, 10, 20, 30])                                     # Wh export
+        close(floats(137, 4), [600, 100, 200, 300])                                 # Wh import
+        assert regs[145:195] == [0] * 50                                            # VAh, VArh, events
+        assert regs[195:197] == [0xffff, 0]
+        # unknown unit: no answer; function 6: exception 1; outside the map: exception 2
+        assert mb_request(port, 6, struct.pack('>BHH', 3, 40000, 2), timeout=0.5) is None
+        assert mb_request(port, 5, struct.pack('>BHH', 6, 40000, 0)) == b'\x86\x01'
+        assert mb_read(port, 5, 40196, 2) == 2
+        u.stop()
+
+
+def test_sunspec_clients():
+    """At most 8 clients; further connections are rejected and logged
+    once, until a client disconnects.  Keepalive is enabled on the
+    connections, so a vanished client does not block a slot forever."""
+    with Env() as env:
+        js = env.json(dict(p=100))
+        port = free_port()
+        u = env.uvrgw('json {\n  url = "%s"\n  interval = 200\n  value p { path = "p"  stale_timeout = 5000 }\n}\n'
+                      'sunspec_server {\n  bind = "127.0.0.1"\n  port = %d\n  meter m { unit_id = 1  power = "p" }\n}\n' % (js.url, port))
+        assert wait_until(lambda: sunspec_power(port, 1) == 100, 5, 'meter data')
+        idle = [socket.create_connection(('127.0.0.1', port)) for _ in range(8)]
+
+        def rejected():
+            try:
+                sunspec_power(port, 1)
+                return False
+            except (OSError, struct.error):
+                return True
+
+        assert wait_until(rejected, 5, 'rejection with 8 clients')
+        u.wait_log('sunspec server: too many clients, connections rejected')
+        assert rejected()
+        ss = subprocess.run(['ss', '-tno', 'state', 'established', '( sport = :%d )' % port], capture_output=True, text=True).stdout
+        assert ss.count('keepalive') == 8, ss
+        idle.pop().close()
+        assert wait_until(lambda: not rejected() and sunspec_power(port, 1) == 100, 5, 'accepted after a disconnect')
+        u.wait_log('sunspec server: accepting connections again')
+        assert len(u.find('too many clients')) == 1
+        for c in idle:
+            c.close()
         u.stop()
 
 

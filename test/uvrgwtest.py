@@ -513,16 +513,25 @@ class ModbusRtuServer(ModbusRegs):
             os.close(self.slave)
 
 
+def mb_request(port, unit, pdu, timeout=2):
+    """Send one Modbus TCP request; returns the response PDU, or None if
+    it is not answered within @p timeout."""
+    with socket.create_connection(('127.0.0.1', port), timeout=S.t(timeout)) as s:
+        s.sendall(struct.pack('>HHHB', 1, 0, len(pdu) + 1, unit) + pdu)
+        try:
+            hdr = s.recv(7, socket.MSG_WAITALL)
+        except socket.timeout:
+            return None
+        n = struct.unpack('>HHHB', hdr)[2]
+        return s.recv(n - 1, socket.MSG_WAITALL)
+
+
 def mb_read(port, unit, addr, count):
     """Read holding registers; returns the list, or the exception code."""
-    with socket.create_connection(('127.0.0.1', port), timeout=S.t(2)) as s:
-        s.sendall(struct.pack('>HHHBBHH', 1, 0, 6, unit, 3, addr, count))
-        hdr = s.recv(7, socket.MSG_WAITALL)
-        n = struct.unpack('>HHHB', hdr)[2]
-        pdu = s.recv(n - 1, socket.MSG_WAITALL)
-        if pdu[0] & 0x80:
-            return pdu[1]
-        return list(struct.unpack('>%dH' % count, pdu[2:2 + 2 * count]))
+    pdu = mb_request(port, unit, struct.pack('>BHH', 3, addr, count))
+    if pdu[0] & 0x80:
+        return pdu[1]
+    return list(struct.unpack('>%dH' % count, pdu[2:2 + 2 * count]))
 
 
 SUNSPEC_W = 40097       # total power W of model 213 (0-based address)
