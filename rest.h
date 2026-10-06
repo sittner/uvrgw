@@ -18,6 +18,7 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <pthread.h>
 
@@ -59,7 +60,7 @@ typedef struct REST_CONN {
   struct REST_VAL *values; /**< Array of value definitions. */
 
   pthread_t thread;      /**< Polling thread handle. */
-  bool thread_running;   /**< Set to false to request thread termination. */
+  atomic_bool thread_running; /**< Set to false to request thread termination. */
   int64_t next_poll;     /**< Monotonic time (ms) for the next HTTP GET. */
 } REST_CONN_T;
 

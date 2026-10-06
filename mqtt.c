@@ -15,8 +15,6 @@
  */
 #include "mqtt.h"
 #include "mqtt_logger.h"
-#include "can.h"
-#include "mb.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +23,6 @@
 #include <ctype.h>
 #include <math.h>
 #include <syslog.h>
-#include <fcntl.h>
 
 #define CONST_STR_PAYLOAD(s) (sizeof(s) - 1), s
 
@@ -314,7 +311,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
-void mqtt_register_disp_cbs(void) {
+int mqtt_register_disp_cbs(void) {
   MQTT_CONN_T *conn;
   int conn_idx;
   MQTT_VAL_T *val;
@@ -322,11 +319,13 @@ void mqtt_register_disp_cbs(void) {
 
   for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
     for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
-      if (val->dir == UVRGW_CONF_VAL_DIR_OUT) {
-        uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+      if (val->dir == UVRGW_CONF_VAL_DIR_OUT && uvrgw_conf_register_disp_cb(val->disp, val, send_value) < 0) {
+        return -1;
       }
     }
   }
+
+  return 0;
 }
 
 void mqtt_unconfigure(void) {

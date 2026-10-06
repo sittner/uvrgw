@@ -87,8 +87,10 @@ int counter_configure(cfg_t *cfg);
 
 /**
  * @brief Register the source callbacks of all counters.
+ *
+ * @return  0 on success, -1 on error.
  */
-void counter_register_disp_cbs(void);
+int counter_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by counter_configure().

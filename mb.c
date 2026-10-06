@@ -17,8 +17,6 @@
  * the device, so all relevant bits of a written register must be mapped.
  */
 #include "mb.h"
-#include "mqtt.h"
-#include "can.h"
 #include "utils.h"
 
 #include <stdio.h>
@@ -28,12 +26,7 @@
 #include <string.h>
 #include <errno.h>
 #include <syslog.h>
-#include <sys/ioctl.h>
-#include <linux/serial.h>
-#include <asm/ioctls.h>
 #include <modbus/modbus.h>
-#include <linux/can.h>
-#include <linux/can/raw.h>
 #include <pthread.h>
 #include <math.h>
 
@@ -53,7 +46,7 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child);
 static int block_configure(cfg_t *cfg, void *ctx, void *child);
 static MB_SLAVE_VAL_T *find_block_value(MB_BLOCK_T *blk, const char *name);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
-static void register_disp_cbs_master(MB_MASTER_T *master);
+static int register_disp_cbs_master(MB_MASTER_T *master);
 static void unconfigure_master(MB_MASTER_T *master);
 static int master_rtu_startup(MB_RTU_MASTER_T *rtu_master);
 static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master);
@@ -417,21 +410,27 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
-void mb_register_disp_cbs(void) {
+int mb_register_disp_cbs(void) {
   MB_RTU_MASTER_T *rtu_master;
   MB_TCP_MASTER_T *tcp_master;
   int master_idx;
 
   for (rtu_master = rtu_masters, master_idx = 0; master_idx < rtu_masters_count; rtu_master++, master_idx++) {
-    register_disp_cbs_master((MB_MASTER_T *) rtu_master);
+    if (register_disp_cbs_master((MB_MASTER_T *) rtu_master) < 0) {
+      return -1;
+    }
   }
 
   for (tcp_master = tcp_masters, master_idx = 0; master_idx < tcp_masters_count; tcp_master++, master_idx++) {
-    register_disp_cbs_master((MB_MASTER_T *) tcp_master);
+    if (register_disp_cbs_master((MB_MASTER_T *) tcp_master) < 0) {
+      return -1;
+    }
   }
+
+  return 0;
 }
 
-static void register_disp_cbs_master(MB_MASTER_T *master) {
+static int register_disp_cbs_master(MB_MASTER_T *master) {
   MB_SLAVE_T *slave;
   int slave_idx;
   MB_BLOCK_T *blk;
@@ -442,12 +441,14 @@ static void register_disp_cbs_master(MB_MASTER_T *master) {
   for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
     for (blk = slave->blocks, blk_idx = 0; blk_idx < slave->blocks_count; blk++, blk_idx++) {
       for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
-        if (blk->dir == UVRGW_CONF_VAL_DIR_OUT) {
-          uvrgw_conf_register_disp_cb(val->disp, val, write_schedule);
+        if (blk->dir == UVRGW_CONF_VAL_DIR_OUT && uvrgw_conf_register_disp_cb(val->disp, val, write_schedule) < 0) {
+          return -1;
         }
       }
     }
   }
+
+  return 0;
 }
 
 void mb_unconfigure(void) {

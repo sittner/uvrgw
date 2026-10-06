@@ -28,6 +28,7 @@
 #include "utils.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -58,7 +59,7 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
 
 static char *owner_str(const char *module, const char *instance);
 static int check_dispatchers(void);
-static void init_dispatcher(void);
+static int init_dispatcher(void);
 static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid);
 static void *watchdog_thread(void *ptr);
 static void watchdog_check(UVRGW_CONF_VAL_DISPATCH_T *dp, int64_t now);
@@ -361,7 +362,7 @@ static UVRGW_CONF_VAL_DISPATCH_T *disp;
 static char *state_dir;
 
 static pthread_t watchdog;
-static bool watchdog_running;
+static atomic_bool watchdog_running;
 
 static int parse_map(const MAP_ITEM_T *map, cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
   for (; map->str != NULL; map++) {
@@ -539,12 +540,14 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
-  init_dispatcher();
-  can_register_disp_cbs();
-  mb_register_disp_cbs();
-  mqtt_register_disp_cbs();
-  counter_register_disp_cbs();
-  eval_register_disp_cbs();
+  if (init_dispatcher()) {
+    goto fail2;
+  }
+
+  if (can_register_disp_cbs() || mb_register_disp_cbs() || mqtt_register_disp_cbs() ||
+      counter_register_disp_cbs() || eval_register_disp_cbs()) {
+    goto fail2;
+  }
 
   cfg_free(cfg);
   return 0;
@@ -673,6 +676,11 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
       return NULL;
     }
     dp->name = uvrgw_conf_strdup(name);
+    if (dp->name == NULL) {
+      syslog(LOG_ERR, "Failed to allocate dispatcher for value '%s'.", name);
+      free(dp);
+      return NULL;
+    }
     pthread_mutex_init(&dp->disp_lock, NULL);
     pthread_mutex_init(&dp->last_lock, NULL);
 
@@ -818,15 +826,23 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatchers(void) {
   return disp;
 }
 
-static void init_dispatcher(void) {
+static int init_dispatcher(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
 
   dp = disp;
   while (dp != NULL) {
     dp->value_cbs_pos = 0;
-    dp->value_cbs = calloc(dp->value_count, sizeof(UVRGW_CONF_DISPATCH_CB_VAL_T));
+    if (dp->value_count > 0) {
+      dp->value_cbs = calloc(dp->value_count, sizeof(UVRGW_CONF_DISPATCH_CB_VAL_T));
+      if (dp->value_cbs == NULL) {
+        syslog(LOG_ERR, "Failed to allocate callbacks of value '%s'.", dp->name);
+        return -1;
+      }
+    }
     dp = dp->next;
   }
+
+  return 0;
 }
 
 /**
@@ -910,7 +926,7 @@ static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool va
 
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {
-      // TODO: handle error
+      // errors are logged by the callback (once per state change)
       cbv->cb(cbv->val, f, valid);
     }
   }

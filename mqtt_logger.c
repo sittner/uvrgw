@@ -9,6 +9,7 @@
 #include "mqtt.h"
 #include "utils.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -19,7 +20,7 @@
 #define LOGGER_THREAD_PERIOD_US 100000
 #define LOGGER_NUM_LEN 40
 
-static bool thread_running;
+static atomic_bool thread_running;
 static pthread_t thread;
 static MQTT_CONN_T *log_conns;
 static int log_conns_count;

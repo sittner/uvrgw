@@ -96,8 +96,10 @@ int mqtt_configure(cfg_t *cfg);
  * @brief Register send callbacks for all OUT-direction MQTT values.
  *
  * Called after the dispatcher callback arrays have been allocated.
+ *
+ * @return  0 on success, -1 on error.
  */
-void mqtt_register_disp_cbs(void);
+int mqtt_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by mqtt_configure().

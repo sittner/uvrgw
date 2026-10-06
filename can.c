@@ -13,25 +13,17 @@
  *    @c timestamp_period is non-zero and the period has elapsed.
  */
 #include "can.h"
-#include "mqtt.h"
-#include "mb.h"
 #include "utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/fd.h>
 #include <net/if.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
-#include <linux/types.h>
-#include <sys/eventfd.h>
 #include <syslog.h>
 #include <errno.h>
 #include <math.h>
@@ -66,7 +58,7 @@ int can_configure(cfg_t *cfg) {
   return uvrgw_conf_config_childs(cfg, "can", &can_ifaces_count, (void **) &can_ifaces, sizeof(CAN_IFACE_T), NULL, iface_configure);
 }
 
-void can_register_disp_cbs(void) {
+int can_register_disp_cbs(void) {
   CAN_IFACE_T *iface;
   int iface_idx;
   CAN_FRAME_T *frame;
@@ -77,12 +69,14 @@ void can_register_disp_cbs(void) {
   for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
     for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
       for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {
-        if (frame->dir == UVRGW_CONF_VAL_DIR_OUT) {
-          uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+        if (frame->dir == UVRGW_CONF_VAL_DIR_OUT && uvrgw_conf_register_disp_cb(val->disp, val, send_value) < 0) {
+          return -1;
         }
       }
     }
   }
+
+  return 0;
 }
 
 void can_unconfigure(void) {

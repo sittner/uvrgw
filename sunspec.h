@@ -31,6 +31,7 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdatomic.h>
 #include <modbus/modbus.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -100,7 +101,7 @@ typedef struct SUNSPEC_SERVER {
   bool accept_failed;        /**< Last accept failed (for state logging). */
 
   pthread_t thread;          /**< Server thread handle. */
-  bool thread_running;       /**< Set to false to request thread termination. */
+  atomic_bool thread_running; /**< Set to false to request thread termination. */
 } SUNSPEC_SERVER_T;
 
 /**

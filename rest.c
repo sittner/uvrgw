@@ -13,9 +13,6 @@
  * data is ignored.
  */
 #include "rest.h"
-#include "can.h"
-#include "mb.h"
-#include "mqtt.h"
 #include "utils.h"
 
 #include <stdio.h>
@@ -385,7 +382,8 @@ static json_object *rest_get_json(REST_CONN_T *conn) {
     curl_easy_setopt(ch, CURLOPT_PASSWORD, conn->pwd);
   }
 
-  // set timeout
+  // set timeout (without signals: requests run in threads)
+  curl_easy_setopt(ch, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(ch, CURLOPT_TIMEOUT_MS, (long) conn->timeout);
 
   // treat HTTP error status (>= 400) as failure

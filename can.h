@@ -19,6 +19,7 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
@@ -79,7 +80,7 @@ typedef struct CAN_IFACE {
 
   int can_fd;              /**< Raw SocketCAN file descriptor; -1 when not open. */
   pthread_t thread;        /**< TX thread handle. */
-  bool thread_running;     /**< Set to false to request TX thread termination. */
+  atomic_bool thread_running; /**< Set to false to request TX thread termination. */
   int64_t next_timestamp;  /**< Monotonic time (ms) for next timestamp transmission. */
   bool write_failed;       /**< Last write to the socket failed (for state logging, TX thread only). */
   bool unsynced;           /**< Clock was not synchronised at the last timestamp (for state logging). */
@@ -104,8 +105,10 @@ int can_configure(cfg_t *cfg);
  * @brief Register send callbacks for all OUT-direction CAN values.
  *
  * Called after the dispatcher callback arrays have been allocated.
+ *
+ * @return  0 on success, -1 on error.
  */
-void can_register_disp_cbs(void);
+int can_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by can_configure().

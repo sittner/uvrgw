@@ -37,6 +37,7 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdatomic.h>
 #include <modbus/modbus.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -135,7 +136,7 @@ typedef struct MB_MASTER {
   pthread_mutex_t write_lock; /**< Mutex serialising write_schedule() vs the polling thread. */
 
   pthread_t thread;          /**< Polling thread handle. */
-  bool thread_running;       /**< Set to false to request thread termination. */
+  atomic_bool thread_running; /**< Set to false to request thread termination. */
   int64_t next_transaction;  /**< Earliest monotonic time (ms) for the next transaction. */
 
   int slave_curr_idx;        /**< Index of the slave currently being serviced. */
@@ -194,8 +195,10 @@ int mb_configure(cfg_t *cfg);
  * @brief Register write callbacks for all OUT-direction Modbus values.
  *
  * Called after the dispatcher callback arrays have been allocated.
+ *
+ * @return  0 on success, -1 on error.
  */
-void mb_register_disp_cbs(void);
+int mb_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by mb_configure().

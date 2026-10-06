@@ -18,6 +18,7 @@
 #include "counter.h"
 #include "utils.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,7 +39,7 @@ static COUNTER_T *counters;
 
 static char *counter_dir;
 static pthread_t thread;
-static bool thread_running;
+static atomic_bool thread_running;
 
 static int counter_configure_one(cfg_t *cfg, void *ctx, void *child);
 static bool valid_name(const char *name);
@@ -174,13 +175,17 @@ static COUNTER_T *find_counter(const char *name) {
   return NULL;
 }
 
-void counter_register_disp_cbs(void) {
+int counter_register_disp_cbs(void) {
   COUNTER_T *c;
   int idx;
 
   for (c = counters, idx = 0; idx < counters_count; c++, idx++) {
-    uvrgw_conf_register_disp_cb(c->src_disp, c, source_update);
+    if (uvrgw_conf_register_disp_cb(c->src_disp, c, source_update) < 0) {
+      return -1;
+    }
   }
+
+  return 0;
 }
 
 void counter_unconfigure(void) {
