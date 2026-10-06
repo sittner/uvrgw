@@ -16,7 +16,7 @@
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **Stalled data handling** — an input value can fall back to a configured value when its source stops delivering (`stale_timeout`); the logger writes `null` and SunSpec meters report a failure for such values.
 - **Clock synchronisation guard** — CAN timestamp frames are only sent and logger snapshots only taken while the system clock is synchronised (kernel time status, maintained by ntpd, chrony or systemd-timesyncd).
-- **Raspberry Pi image** — Buildroot SD card image for a Pi Zero W with RS485/CAN HAT: read-only root, WiFi, A/B partition layout for updates.
+- **Raspberry Pi image** — Buildroot SD card image for a Pi Zero W with RS485/CAN HAT: read-only root, WiFi, A/B root slots with RAUC updates and U-Boot fallback.
 - Single configuration file, libconfuse-based syntax.
 - Clean shutdown on `SIGINT` / `SIGTERM`.
 
@@ -116,7 +116,25 @@ Any other Buildroot target can be given the same way (`make -C br menuconfig`, `
 | p2 / p3 | root slots A / B (squashfs, kernel in `/boot`); the image fills both |
 | p4 `data` (ext4) | `/data`: configuration, credentials, state |
 
-**Slot selection** (`boot.cmd`, the RAUC U-Boot scheme): `BOOT_ORDER` (default `A B`) lists the slots, `BOOT_A_LEFT` / `BOOT_B_LEFT` (default 3) the remaining attempts.  Each boot uses one attempt of the first slot with attempts left and passes `root=` and `rauc.slot=` to the kernel; after three failed boots (panic, watchdog reset, missing kernel) U-Boot boots the other slot.  Once uvrgw is started, `uvrgw-mark-good.service` resets the attempts of the booted slot.  The environment is written power-safe (redundant copies); `fw_printenv` / `fw_setenv` access it from Linux.
+**Slot selection** (`boot.cmd`, the RAUC U-Boot scheme): `BOOT_ORDER` (default `A B`) lists the slots, `BOOT_A_LEFT` / `BOOT_B_LEFT` (default 3) the remaining attempts.  Each boot uses one attempt of the first slot with attempts left and passes `root=` and `rauc.slot=` to the kernel; after three failed boots (panic, watchdog reset, missing kernel) U-Boot boots the other slot.  Once uvrgw is started, `uvrgw-mark-good.service` marks the booted slot good (`rauc status mark-good`, resets its attempts).  The environment is written power-safe (redundant copies); `fw_printenv` / `fw_setenv` access it from Linux.
+
+**Updates** (RAUC, `br/external/board/rpi0w/rootfs-overlay/etc/rauc/system.conf`): the build also creates the signed bundle `br/output/images/uvrgw-rpi0w.raucb` (root filesystem, version from `git describe`).  RAUC writes it to the inactive slot and makes that slot the first in `BOOT_ORDER`; if it does not come up three times, U-Boot boots the old slot again.
+
+```bash
+scp br/output/images/uvrgw-rpi0w.raucb root@uvrgw:/tmp/
+ssh root@uvrgw 'rauc install /tmp/uvrgw-rpi0w.raucb && reboot'
+ssh root@uvrgw rauc status            # booted slot, versions, boot status
+```
+
+The signing key and certificate are in `br/keys/` (not in git; the build fails without them).  The certificate is the keyring in the image, so bundles are only accepted from the same key:
+
+```bash
+mkdir -p br/keys
+openssl req -x509 -newkey rsa:4096 -nodes -days 36500 \
+  -keyout br/keys/key.pem -out br/keys/cert.pem -subj "/O=uvrgw/CN=uvrgw update signing"
+```
+
+Only the root slots are updated; p1 (firmware, U-Boot, `config.txt`, DT overlays, `boot.scr`) and `/data` stay as they are.
 
 **Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  After flashing, mount p4 and add:
 

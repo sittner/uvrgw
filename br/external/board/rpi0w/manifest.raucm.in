@@ -1,0 +1,9 @@
+[update]
+compatible=uvrgw-rpi0w
+version=@VERSION@
+
+[bundle]
+format=verity
+
+[image.rootfs]
+filename=rootfs.squashfs

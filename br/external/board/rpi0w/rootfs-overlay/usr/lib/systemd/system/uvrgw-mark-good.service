@@ -1,11 +1,11 @@
 [Unit]
-Description=Mark the booted slot good (U-Boot boot attempts)
+Description=Mark the booted slot good (RAUC)
 Requires=uvrgw.service
 After=uvrgw.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/libexec/uvrgw-mark-good
+ExecStart=/usr/bin/rauc status mark-good
 
 [Install]
 WantedBy=multi-user.target

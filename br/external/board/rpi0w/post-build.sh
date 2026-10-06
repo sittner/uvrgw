@@ -1,8 +1,17 @@
 #!/bin/sh
-# Link the writable configuration and state into /data (rootfs is read-only).
+# Link the writable configuration and state into /data (rootfs is read-only),
+# install the RAUC keyring.
 
 set -u
 set -e
+
+KEYS_DIR="${BR2_EXTERNAL_UVRGW_PATH}/../keys"
+
+if [ ! -f "${KEYS_DIR}/cert.pem" ]; then
+	echo "RAUC certificate ${KEYS_DIR}/cert.pem missing (see README)" >&2
+	exit 1
+fi
+install -D -m 0644 "${KEYS_DIR}/cert.pem" "${TARGET_DIR}/etc/rauc/keyring.pem"
 
 mkdir -p "${TARGET_DIR}/data" "${TARGET_DIR}/etc/wpa_supplicant"
 
