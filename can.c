@@ -9,13 +9,12 @@
  *
  * The TX thread wakes every IFACE_THREAD_PERIOD_US microseconds and:
  *  - transmits any pending outbound frame whose @c send_time has elapsed;
- *  - sends an NTP-synced timestamp frame on CAN ID 0x100 when
+ *  - sends a timestamp frame on CAN ID 0x100 (while the clock is synchronised) when
  *    @c timestamp_period is non-zero and the period has elapsed.
  */
 #include "can.h"
 #include "mqtt.h"
 #include "mb.h"
-#include "ntp_check.h"
 #include "utils.h"
 
 #include <stdlib.h>
@@ -493,7 +492,7 @@ static void *iface_thread(void *ptr) {
 /**
  * @brief Single TX iteration for one CAN interface.
  *
- * Sends the NTP timestamp frame if the period has elapsed, then checks
+ * Sends the timestamp frame if the period has elapsed, then checks
  * all OUT-direction frames and transmits any whose @c send_time has expired.
  *
  * @param iface  Interface to service.
@@ -671,16 +670,16 @@ static int send_value(void *v, double f, bool valid) {
 }
 
 /**
- * @brief Build and transmit an NTP-synced timestamp CAN frame.
+ * @brief Build and transmit a timestamp CAN frame.
  *
  * The frame uses CAN ID 0x100 with 6 data bytes:
  *   - bytes 0–3: milliseconds since local midnight (little-endian uint32).
  *   - bytes 4–5: days since 1984-01-01 (little-endian uint16).
  *
- * Only sent when ntp_check() confirms the local clock is synchronised.
+ * Only sent while the system clock is synchronised (utl_clock_synced()).
  *
  * @param iface  Interface on which to send the frame.
- * @return       1 on successful transmission, 0 if NTP not synced,
+ * @return       1 on successful transmission, 0 if the clock is not synchronised,
  *               -1 on socket or time error.
  */
 static int send_timestamp(CAN_IFACE_T *iface) {
@@ -690,16 +689,16 @@ static int send_timestamp(CAN_IFACE_T *iface) {
   uint16_t days;
   struct can_frame frame;
 
-  // check for valid NTP time
-  if (!ntp_check()) {
+  // check for valid time
+  if (!utl_clock_synced()) {
     if (!iface->unsynced) {
-      syslog(LOG_WARNING, "NTP daemon not synced, CAN timestamps on '%s' are not sent.", iface->interface);
+      syslog(LOG_WARNING, "clock not synchronised, CAN timestamps on '%s' are not sent.", iface->interface);
       iface->unsynced = true;
     }
     return 0;
   }
   if (iface->unsynced) {
-    syslog(LOG_INFO, "NTP daemon synced, CAN timestamps on '%s' are sent again.", iface->interface);
+    syslog(LOG_INFO, "clock synchronised, CAN timestamps on '%s' are sent again.", iface->interface);
     iface->unsynced = false;
   }
 

@@ -1,7 +1,7 @@
 /**
  * @file can.h
  * @brief CAN bus interface — SocketCAN RX/TX, value encoding/decoding and
- *        NTP-synced timestamp injection.
+ *        timestamp injection.
  *
  * Each CAN interface maps to a @c CAN_IFACE_T which holds a set of
  * @c CAN_FRAME_T definitions.  Each frame in turn contains a list of
@@ -67,7 +67,7 @@ typedef struct CAN_FRAME {
  */
 typedef struct CAN_IFACE {
   const char *interface;   /**< SocketCAN interface name (e.g. "can0"). */
-  int timestamp_period;    /**< Interval in ms between NTP timestamp frames; 0 disables. */
+  int timestamp_period;    /**< Interval in ms between timestamp frames; 0 disables. */
   int send_timeout;        /**< Max ms to coalesce outbound value updates before transmitting. */
   double init_value;       /**< Default @c init_value for all input values of this interface. */
   int stale_timeout;       /**< Default @c stale_timeout (ms) for all input values of this interface; 0 = never. */
@@ -78,9 +78,9 @@ typedef struct CAN_IFACE {
   int can_fd;              /**< Raw SocketCAN file descriptor; -1 when not open. */
   pthread_t thread;        /**< TX thread handle. */
   bool thread_running;     /**< Set to false to request TX thread termination. */
-  int64_t next_timestamp;  /**< Monotonic time (ms) for next NTP timestamp transmission. */
+  int64_t next_timestamp;  /**< Monotonic time (ms) for next timestamp transmission. */
   bool write_failed;       /**< Last write to the socket failed (for state logging, TX thread only). */
-  bool unsynced;           /**< NTP was not synced at the last timestamp (for state logging). */
+  bool unsynced;           /**< Clock was not synchronised at the last timestamp (for state logging). */
 } CAN_IFACE_T;
 
 /**

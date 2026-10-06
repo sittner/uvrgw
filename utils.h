@@ -3,12 +3,13 @@
  * @brief Utility functions used throughout uvrgw.
  *
  * Provides helpers for value clamping, a monotonic millisecond clock,
- * and fd_set management used by the main select() event loop.
+ * the clock synchronisation check and fd_set management used by the main select() event loop.
  */
 
 #ifndef _UTILS_H_
 #define _UTILS_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/select.h>
 
@@ -30,6 +31,16 @@ double utl_val_limit(double val, double min, double max);
  * @return Monotonic time in milliseconds.
  */
 int64_t utl_get_ticks(void);
+
+/**
+ * @brief Check whether the system clock is synchronised.
+ *
+ * Uses the kernel time status, which is maintained by ntpd, chrony and
+ * systemd-timesyncd.
+ *
+ * @return  true if synchronised.
+ */
+bool utl_clock_synced(void);
 
 /**
  * @brief Add a file descriptor to an fd_set and update the maximum fd counter.

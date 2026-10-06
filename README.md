@@ -6,7 +6,7 @@
 
 ## Features
 
-- **CAN bus** (Linux SocketCAN) — receive and transmit CAN frames with typed values (`bit`, `u8`, `s8`, `u16`, `s16`, `u32`, `s32`).  Supports periodic NTP-synced timestamp injection on CAN ID `0x100`.  UVR-specific `ANA:node:chan` and `DIG:node` shorthand for CAN IDs.
+- **CAN bus** (Linux SocketCAN) — receive and transmit CAN frames with typed values (`bit`, `u8`, `s8`, `u16`, `s16`, `u32`, `s32`).  Supports periodic timestamp injection on CAN ID `0x100`.  UVR-specific `ANA:node:chan` and `DIG:node` shorthand for CAN IDs.
 - **Modbus RTU and TCP** — poll Modbus slaves on configurable intervals; read holding registers, input registers, coils and discrete inputs; write holding registers and coils.  Supports 16/32-bit integer (`s16`, `u16`, `s32`, `u32`), 32-bit float (`f32`), bit and bitmask value types with an optional per-value scale-factor register.
 - **MQTT** (via libmosquitto) — publish and subscribe with configurable topics, QoS, retain flag and a last-will state topic.  Value types: `number` (printf-style format string), `switch` (`ON`/`OFF`), `contact` (`OPEN`/`CLOSED`).
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
@@ -15,7 +15,7 @@
 - **Calculated values and control logic** — `eval` sections define values by expressions over other values (arithmetic, comparison, logic, hysteresis, ...), evaluated periodically or when input values arrive.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **Stalled data handling** — an input value can fall back to a configured value when its source stops delivering (`stale_timeout`); the logger writes `null` and SunSpec meters report a failure for such values.
-- **NTP synchronisation guard** — CAN timestamp frames are only sent when the local NTP daemon reports a synchronised clock.
+- **Clock synchronisation guard** — CAN timestamp frames are only sent and logger snapshots only taken while the system clock is synchronised (kernel time status, maintained by ntpd, chrony or systemd-timesyncd).
 - Single configuration file, libconfuse-based syntax.
 - Clean shutdown on `SIGINT` / `SIGTERM`.
 
@@ -289,7 +289,7 @@ json {
 ```
 can {
   interface        = "can0"
-  timestamp_period = 60000   # send NTP timestamp every 60 s (0 = disabled)
+  timestamp_period = 60000   # send timestamp every 60 s (0 = disabled), only while the clock is synchronised
   send_timeout     = 1000    # coalesce output writes within 1 000 ms
 
   # Receive frame (CAN → value dispatcher)

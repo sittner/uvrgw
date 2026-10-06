@@ -7,6 +7,7 @@
  */
 #include "mqtt_logger.h"
 #include "mqtt.h"
+#include "utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -14,7 +15,6 @@
 #include <unistd.h>
 #include <math.h>
 #include <syslog.h>
-#include <sys/timex.h>
 
 #define LOGGER_THREAD_PERIOD_US 100000
 #define LOGGER_NUM_LEN 40
@@ -31,7 +31,6 @@ static void *logger_thread(void *ptr);
 static void logger_task(MQTT_LOGGER_T *logger, time_t now);
 static void take_snapshot(MQTT_LOGGER_T *logger, time_t t);
 static char *build_json(MQTT_LOGGER_T *logger, time_t t);
-static bool clock_synced(void);
 
 int mqtt_logger_configure(cfg_t *cfg, MQTT_CONN_T *conn) {
   return uvrgw_conf_config_childs(cfg, "logger", &conn->loggers_count, (void **) &conn->loggers, sizeof(MQTT_LOGGER_T), conn, logger_configure);
@@ -230,7 +229,7 @@ static void logger_task(MQTT_LOGGER_T *logger, time_t now) {
     }
     logger->next_time = t + logger->interval;
 
-    if (clock_synced()) {
+    if (utl_clock_synced()) {
       if (logger->unsynced) {
         syslog(LOG_INFO, "mqtt logger '%s': clock synchronised, snapshots resumed.", logger->name);
         logger->unsynced = false;
@@ -335,19 +334,4 @@ static char *build_json(MQTT_LOGGER_T *logger, time_t t) {
   snprintf(json + len, size - len, "}");
 
   return json;
-}
-
-/**
- * @brief Check whether the system clock is synchronised.
- *
- * Uses the kernel time status, which is maintained by ntpd, chrony and
- * systemd-timesyncd.
- *
- * @return  true if synchronised.
- */
-static bool clock_synced(void) {
-  struct timex tx;
-
-  memset(&tx, 0, sizeof(tx));
-  return adjtimex(&tx) != TIME_ERROR && (tx.status & STA_UNSYNC) == 0;
 }

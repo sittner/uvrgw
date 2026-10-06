@@ -11,7 +11,6 @@ SRC = \
 	mqtt.c \
 	mqtt_logger.c \
 	rest.c \
-	ntp_check.c \
 	sunspec.c \
 	counter.c \
 	eval.c \

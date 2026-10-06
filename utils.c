@@ -3,11 +3,14 @@
  * @brief Utility function implementations for uvrgw.
  *
  * Implements the helpers declared in utils.h: value clamping,
- * a monotonic millisecond clock, and fd_set helpers.
+ * a monotonic millisecond clock, the clock synchronisation check and
+ * fd_set helpers.
  */
 #include "utils.h"
 
+#include <string.h>
 #include <time.h>
+#include <sys/timex.h>
 
 /**
  * @brief Clamp @p val to [@p min, @p max].
@@ -31,6 +34,16 @@ int64_t utl_get_ticks(void) {
   struct timespec tp;
   clock_gettime(CLOCK_MONOTONIC, &tp);
   return (int64_t) tp.tv_sec * 1000ULL + ((int64_t) tp.tv_nsec / 1000000ULL);
+}
+
+/**
+ * @brief Check whether the system clock is synchronised (kernel time status).
+ */
+bool utl_clock_synced(void) {
+  struct timex tx;
+
+  memset(&tx, 0, sizeof(tx));
+  return adjtimex(&tx) != TIME_ERROR && (tx.status & STA_UNSYNC) == 0;
 }
 
 /**
