@@ -1,0 +1,28 @@
+tinyexpr - expression parser used by the eval module (eval.c)
+
+Upstream:  https://github.com/codeplea/tinyexpr
+Release:   v1.1.1
+Commit:    6d2233ce14dca063994708a91b3b98e24e8aa0c3
+Licence:   zlib (see LICENSE)
+
+LICENSE is copied unmodified from the release.  tinyexpr.c and tinyexpr.h
+are copied from the release and modified for uvrgw (uvrgw.patch, changes
+marked "uvrgw:" in the source):
+
+  te_is_builtin()       tells whether a name is a built-in function or
+                        constant.  eval.c uses it to reject value names
+                        that would hide a built-in (tinyexpr looks up
+                        variables first), so the list of built-ins is
+                        only defined in tinyexpr.c.
+
+Examples, tests and benchmarks are not included.
+
+Updating tinyexpr: copy the new tinyexpr.c/h, then apply uvrgw.patch
+(patch -p1 < uvrgw.patch in this directory).  If the patch is forgotten,
+linking fails (undefined reference to te_is_builtin).  Update release and
+commit above.
+
+Compile options are set in the uvrgw Makefile (not in tinyexpr.c):
+  -DTE_POW_FROM_RIGHT   '^' is right associative and binds tighter than
+                        unary minus (-2^2 = -4, 2^3^2 = 512)
+TE_NAT_LOG is not defined, so 'log' is log10.

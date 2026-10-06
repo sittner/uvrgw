@@ -121,12 +121,16 @@ struct UVRGW_CONF_VAL_DISPATCH;
  * When an input fires uvrgw_conf_disp_val() all non-NULL callbacks whose
  * @c val differs from the source are invoked.
  *
+ * At most one module may publish (produce) a name; it registers itself
+ * with uvrgw_conf_set_producer() during configuration.
+ *
  * The dispatcher also keeps the last dispatched value together with its
  * update time, so consumers can read the current value on demand and
  * detect stale values (see uvrgw_conf_get_val()).
  */
 typedef struct UVRGW_CONF_VAL_DISPATCH {
   const char *name;                       /**< Logical value name shared across protocol sections. */
+  char *producer;                         /**< Module publishing this value (e.g. "counter 'x'"); NULL if none. */
   int value_count;                        /**< Total number of registered callbacks (outputs). */
   struct UVRGW_CONF_VAL_DISPATCH *next;   /**< Next dispatcher in the linked list. */
 
@@ -198,6 +202,29 @@ char *uvrgw_conf_strdup(const char *s);
  * @return          Pointer to the dispatcher entry (never NULL unless OOM).
  */
 UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool alloc_cb);
+
+/**
+ * @brief Register the module publishing a value.
+ *
+ * Called during configuration by every module for each name it publishes
+ * (inputs, counters, evals).  A name may have only one producer; a second
+ * one is a configuration error, logged with both owners.
+ *
+ * @param dp        Dispatcher of the published name.
+ * @param module    Module/section type (e.g. "modbus_tcp", "counter").
+ * @param instance  Section identification (e.g. IP address, counter name).
+ * @return          0 on success, -1 if the name already has a producer.
+ */
+int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance);
+
+/**
+ * @brief Get the head of the dispatcher list.
+ *
+ * Valid after configuration until uvrgw_conf_cleanup(); follow @c next.
+ *
+ * @return  First dispatcher, or NULL if there is none.
+ */
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatchers(void);
 
 /**
  * @brief Register a send callback on a dispatcher.

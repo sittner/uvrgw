@@ -3,8 +3,10 @@
  * @brief Configuration file parsing and value dispatch implementation.
  *
  * Uses libconfuse to parse the configuration file into a tree of sections.
- * Each top-level section (mqtt, json, can, modbus_rtu, modbus_tcp) is
- * forwarded to the corresponding subsystem's configure() function.
+ * Each top-level section (mqtt, json, can, modbus_rtu, modbus_tcp,
+ * sunspec_server, counter, eval) is forwarded to the corresponding
+ * subsystem's configure() function.  eval is configured last, because it
+ * resolves the names used by all other modules.
  *
  * After configuration the dispatcher linked list is fully populated and
  * the per-entry callback arrays are allocated.  The register_disp_cbs
@@ -19,6 +21,7 @@
 #include "rest.h"
 #include "sunspec.h"
 #include "counter.h"
+#include "eval.h"
 #include "utils.h"
 
 #include <math.h>
@@ -233,6 +236,21 @@ static cfg_opt_t counter_opts[] = {
   CFG_END()
 };
 
+static cfg_opt_t eval_val_opts[] = {
+  CFG_STR("expr", NULL, CFGF_NONE),
+  CFG_BOOL("local", cfg_false, CFGF_NONE),
+  CFG_FLOAT("init", 0.0, CFGF_NONE),
+  CFG_END()
+};
+
+static cfg_opt_t eval_opts[] = {
+  CFG_INT("period", 0, CFGF_NODEFAULT),
+  CFG_STR_LIST("triggers", NULL, CFGF_NONE),
+  CFG_INT("max_age", 600000, CFGF_NONE),
+  CFG_SEC("value", eval_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
+  CFG_END()
+};
+
 static cfg_opt_t opts[] = {
   CFG_STR("state_dir", NULL, CFGF_NONE),
   CFG_SEC("mqtt", mqtt_opts, CFGF_MULTI),
@@ -242,6 +260,7 @@ static cfg_opt_t opts[] = {
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
   CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("eval", eval_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -460,6 +479,7 @@ int uvrgw_conf_load(const char *file) {
   rest_init();
   sunspec_init();
   counter_init();
+  eval_init();
 
   if (can_configure(cfg)) {
     goto fail2;
@@ -485,11 +505,17 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
+  // evals last: all value names must be known
+  if (eval_configure(cfg)) {
+    goto fail2;
+  }
+
   init_dispatcher();
   can_register_disp_cbs();
   mb_register_disp_cbs();
   mqtt_register_disp_cbs();
   counter_register_disp_cbs();
+  eval_register_disp_cbs();
 
   cfg_free(cfg);
   return 0;
@@ -509,6 +535,7 @@ void uvrgw_conf_cleanup(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
   UVRGW_CONF_VAL_DISPATCH_T *next;
 
+  eval_unconfigure();
   counter_unconfigure();
   sunspec_unconfigure();
   rest_unconfigure();
@@ -521,6 +548,7 @@ void uvrgw_conf_cleanup(void) {
     next = dp->next;
     pthread_mutex_destroy(&dp->last_lock);
     free((void *) dp->name);
+    free(dp->producer);
     free(dp->value_cbs);
     free(dp);
     dp = next;
@@ -629,6 +657,43 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
   }
 
   return dp;
+}
+
+/**
+ * @brief Register the producer of a value (see header).
+ *
+ * @param dp        Dispatcher.
+ * @param module    Module/section type.
+ * @param instance  Section identification.
+ * @return          0 on success, -1 on duplicate producer or OOM.
+ */
+int uvrgw_conf_set_producer(UVRGW_CONF_VAL_DISPATCH_T *dp, const char *module, const char *instance) {
+  char *owner;
+
+  owner = malloc(strlen(module) + strlen(instance) + 4);
+  if (owner == NULL) {
+    syslog(LOG_ERR, "Failed to allocate producer of value '%s'.", dp->name);
+    return -1;
+  }
+  sprintf(owner, "%s '%s'", module, instance);
+
+  if (dp->producer != NULL) {
+    syslog(LOG_ERR, "value '%s' of %s is already produced by %s.", dp->name, owner, dp->producer);
+    free(owner);
+    return -1;
+  }
+
+  dp->producer = owner;
+  return 0;
+}
+
+/**
+ * @brief Get the head of the dispatcher list.
+ *
+ * @return  First dispatcher, or NULL.
+ */
+UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatchers(void) {
+  return disp;
 }
 
 static void init_dispatcher(void) {

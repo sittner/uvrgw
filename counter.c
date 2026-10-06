@@ -133,6 +133,10 @@ static int counter_configure_one(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (uvrgw_conf_set_producer(c->disp, "counter", c->name) < 0) {
+    return -1;
+  }
+
   return 0;
 }
 

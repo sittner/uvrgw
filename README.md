@@ -12,6 +12,7 @@
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
 - **SunSpec smart meter emulation** — Modbus TCP server serving virtual three-phase meters (SunSpec models 1 + 213, float), e.g. as secondary meters for a Fronius inverter.  Meter quantities are taken from any input by value name; apparent/reactive power, phase-to-phase voltages and totals are derived.
 - **Persistent counters** — monotonic energy counters from device counters (with reset detection and plausibility check) or by integrating power; state survives restarts and device counter resets.
+- **Calculated values and control logic** — `eval` sections define values by expressions over other values (arithmetic, comparison, logic, hysteresis, ...), evaluated periodically or when input values arrive; values with stale inputs are not published.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **NTP synchronisation guard** — CAN timestamp frames are only sent when the local NTP daemon reports a synchronised clock.
 - Single configuration file, libconfuse-based syntax.
@@ -79,9 +80,9 @@ If no config file is given the default path `/etc/uvrgw.conf` is used.
 
 ## Configuration
 
-The configuration file uses [libconfuse](https://github.com/libconfuse/libconfuse) syntax.  Top-level sections are `mqtt {}`, `json {}`, `can {}`, `modbus_rtu {}` and `modbus_tcp {}`.
+The configuration file uses [libconfuse](https://github.com/libconfuse/libconfuse) syntax.  Top-level sections are `mqtt {}`, `json {}`, `can {}`, `modbus_rtu {}`, `modbus_tcp {}`, `sunspec_server {}`, `counter` and `eval`.
 
-Values across different protocol sections are linked by **name**: giving two values the same name in any combination of sections causes the value dispatcher to forward every received value to all registered outputs with that name.
+Values across different protocol sections are linked by **name**: giving two values the same name in any combination of sections causes the value dispatcher to forward every received value to all registered outputs with that name.  Each name may be published by only one input, counter or eval; a second one is a configuration error naming both (e.g. `value 'x' of eval 'a' is already produced by modbus_tcp '192.168.1.10'`).
 
 ### MQTT
 
@@ -422,6 +423,91 @@ json {
 }
 ```
 
+### Calculated values and control logic (eval)
+
+```
+eval solar {
+  period  = 1000                # evaluate every 1000 ms
+  max_age = 10000               # inputs older than 10 s are stale
+  value diff       { expr = "collector_temp - tank_temp"  local = true }
+  value solar_pump { expr = "hyst(solar_pump, diff, 8, 4) && tank_temp < 90" }
+  value pump_on_s  { expr = "if(solar_pump, pump_on_s + dt, 0)" }
+}
+
+# heat pump total energy: evaluated once per poll, after the last phase arrived
+eval hp_energy {
+  triggers = {"hp_energy_imp3"}
+  value hp_energy_imp { expr = "hp_energy_imp1 + hp_energy_imp2 + hp_energy_imp3" }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `period` | — | Evaluate every `period` ms. |
+| `triggers` | — | Evaluate when one of these values is updated. |
+| `max_age` | 600000 | Max. age (ms) of outside values; 0 = no limit. |
+| `value <name>` | | One or more values, evaluated in config order. |
+| `expr` | (required) | Expression of the value. |
+| `local` | false | Value is private to the eval (not published); the name can be reused in other evals. |
+| `init` | 0 | Value before the first evaluation (for values that read themselves or are read by a value further up). |
+
+An eval publishes its non-local values under their names, so they can be used like any input (MQTT, CAN, Modbus outputs, counters, SunSpec, logger, other evals).  Every evaluation publishes all values that were evaluated, also unchanged ones.
+
+**Evaluation modes** (exactly one):
+
+- `period`: every `period` ms on a fixed schedule; missed evaluations are skipped, not caught up.
+- `triggers`: when one of the listed values is updated.
+- neither: when one of the outside values read by the expressions is updated (default triggers).  With several of them arriving together (e.g. all values of one Modbus block or JSON poll) this may evaluate up to once per value; use `triggers` with the last one to evaluate once.
+
+`period` and `triggers` together are an error.  Triggers arriving while an evaluation is pending cause one evaluation.  All evals are evaluated once at startup.  Evals that trigger each other in a cycle (an eval publishes a trigger of the next one, and the last one a trigger of the first) are a configuration error, because they would evaluate forever; periodic evals may read each other's values (they see the result of the other's last evaluation).  Cycles through other modules (e.g. eval → counter → eval) are not detected.
+
+**Names in expressions** are resolved in this order:
+
+1. `dt`: seconds since the previous update of the value being evaluated; 0 for its first evaluation and after it was skipped.
+2. A value of the same eval: a value defined further up has the result of this evaluation; the value itself and values further down have the result of the previous one (or `init`).
+3. An outside value: any other value name used in the configuration (inputs, counters, values of other evals, ...).
+4. An expression function (see below).
+
+Value names of an eval must start with a letter, followed by letters, digits and `_`, and must not be `dt` or the name of an expression function.  Outside values whose name does not follow this rule (e.g. contains `.` or `-`), is `dt` or equals the name of a function cannot be used in expressions.  Unknown names and syntax errors are reported at config load with their position.  A local value must not have the name of a value used outside of the eval (it would hide it).  An eval without `period` and `triggers` must read at least one outside value.
+
+**Validity.**  Validity is decided per value, so a dead input only stops the values that depend on it:
+
+- An outside value is invalid if it was never received or is older than `max_age` (unless `max_age = 0`).
+- A value is skipped (not evaluated and not published) if an outside value it depends on is invalid, if a value further up that it reads was not updated in this evaluation, or if its result is not finite (NaN, inf).  A value depends on the outside values it reads and on those of the other values of the eval it reads, further up or further down, also indirectly.  So a value reading the previous state of a value further down is skipped together with it when their inputs are stale.
+- A skipped value keeps its previous state (for itself and values further up that read it).  It is not published, so it becomes stale for its consumers.  In other evals, values reading it are skipped once it is older than their `max_age`.
+- A value reading a value further down gets its result of the previous evaluation, i.e. one evaluation late: in the first evaluation after startup or after a gap it gets `init` or the state from before the gap, and after a non-finite result of that value its last finite one.
+
+A derived value is therefore never published from stale inputs.  The default `max_age` (10 minutes, as the default `stale_timeout` of the MQTT logger) suits sensors that publish rarely; control logic should set a tighter limit.  `max_age = 0` uses the last known value of an input, however old.  Stale inputs and non-finite results are logged once per state change; an input never received is reported after `max_age` (10 minutes with `max_age = 0`).
+
+**Expressions** ([tinyexpr](https://github.com/codeplea/tinyexpr)).  All values are doubles; 0 is false, everything else is true.  Comparisons and logic operators return 1 or 0.
+
+| Precedence (highest first) | Operators |
+|---|---|
+| unary | `-` `+` `!` |
+| power | `^` (right associative: `2^3^2` = 512, `-2^2` = -4) |
+| multiplicative | `*` `/` `%` |
+| additive | `+` `-` |
+| relational | `<` `<=` `>` `>=` |
+| equality | `==` `!=` |
+| logical and | `&&` |
+| logical or | `\|\|` |
+
+Note: `!` binds tighter than `+` (`!0+1` = 2).  `&&` and `||` evaluate both sides.
+
+| Function | Result |
+|---|---|
+| `if(c, a, b)` | `a` if `c` is true, else `b` (both are evaluated) |
+| `min(a, b)`, `max(a, b)` | smaller / larger value |
+| `clamp(x, lo, hi)` | `x` limited to `[lo, hi]` |
+| `hyst(prev, x, on, off)` | 1 if `x >= on`, 0 if `x <= off`, else `prev` (as 1/0); with `on < off` inverted: 1 if `x <= on`, 0 if `x >= off` |
+| `abs`, `floor`, `ceil`, `sqrt`, `pow(x, y)`, `exp`, `ln`, `log10` | as in C (`ln` is the natural logarithm) |
+| `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh` | trigonometric functions (radians) |
+| `pi`, `e` | constants |
+
+Only the final result of a value is checked: division by zero gives inf (the value is skipped), but `if(x != 0, a / x, 0)` is a working guard, although both branches are evaluated.
+
+**State** is explicit: a value that needs memory reads itself, e.g. `hyst(solar_pump, ...)` or the run time counter `if(solar_pump, pump_on_s + dt, 0)`.  Time dependent expressions use `dt` instead of assuming a period, so they work in all modes and do not jump after a gap.  State is kept in memory only: after a restart values start at `init`.  If uvrgw stops, outputs keep their last state, so safety limits (e.g. tank over-temperature) belong in the controller.
+
 ### SunSpec meter emulation
 
 ```
@@ -484,6 +570,7 @@ sunspec_server {
          │  per-REST-endpoint polling thread            │
          │  per-SunSpec-server thread                   │
          │  counter thread                              │
+         │  eval thread                                 │
          │  per-MQTT-connection background thread       │
          │         (managed by libmosquitto)            │
          │                                              │
@@ -502,6 +589,7 @@ sunspec_server {
 - **Modbus thread** (`mb.c`): wakes every 10 ms, polls slaves round-robin and writes queued output values.
 - **REST thread** (`rest.c`): wakes every 100 ms, checks each endpoint's poll interval and performs HTTP GET.
 - **Counter thread** (`counter.c`): advances power integration counters every second and saves changed counter states every 5 minutes.  Counters are started before all other modules, so states are loaded before the first value arrives.  On shutdown the thread is stopped together with the other value sources (see below); the states are saved last, after the last value.
+- **Eval thread** (`eval.c`): evaluates all evals.  Trigger callbacks (in the thread of the source) only mark an eval as pending, so expressions are never evaluated in a source thread.  Started after the outputs and stopped together with the other value sources.
 - **SunSpec server thread** (`sunspec.c`): waits on the listening socket and client connections (`select()` with 100 ms timeout) and answers requests from a register image rebuilt from the dispatcher's last values.
 - **MQTT** (`mqtt.c`): libmosquitto manages its own background thread for connection, keep-alive and message delivery.
 - **MQTT logger thread** (`mqtt_logger.c`): takes and publishes the logger snapshots at the aligned times.
@@ -523,3 +611,5 @@ Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the
 ## License
 
 No license is currently specified in this repository.
+
+The bundled [tinyexpr](https://github.com/codeplea/tinyexpr) (`tinyexpr/`, used by `eval`, slightly modified as described in `tinyexpr/README.uvrgw`) is licensed under the zlib license, see `tinyexpr/LICENSE`.
