@@ -249,6 +249,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_VAL_T *val = (CAN_VAL_T *) child;
   double init_value;
   int stale_timeout;
+  int len;
 
   val->frame = (CAN_FRAME_T *) ctx;
 
@@ -282,6 +283,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' bit pos %d exceeds frame data boundary.", val->name, val->pos);
         return -1;
       }
+      len = (val->pos >> 3) + 1;
       break;
     case UVRGW_CONF_CAN_TYPE_U8:
     case UVRGW_CONF_CAN_TYPE_S8:
@@ -289,6 +291,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 1-byte type.", val->name, val->pos);
         return -1;
       }
+      len = val->pos + 1;
       break;
     case UVRGW_CONF_CAN_TYPE_U16:
     case UVRGW_CONF_CAN_TYPE_S16:
@@ -296,6 +299,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 2-byte type.", val->name, val->pos);
         return -1;
       }
+      len = val->pos + 2;
       break;
     case UVRGW_CONF_CAN_TYPE_U32:
     case UVRGW_CONF_CAN_TYPE_S32:
@@ -303,10 +307,16 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 4-byte type.", val->name, val->pos);
         return -1;
       }
+      len = val->pos + 4;
       break;
     default:
       syslog(LOG_ERR, "CAN value '%s' has invalid type.", val->name);
       return -1;
+  }
+
+  // data bytes used by the values of the frame
+  if (len > val->frame->min_dlc) {
+    val->frame->min_dlc = len;
   }
 
   // outputs divide by scale
@@ -386,7 +396,9 @@ fail0:
  * Called from can_handler() when the interface socket is readable.
  * Reads one standard CAN frame, matches it against all IN-direction
  * frame definitions and dispatches matching values after applying
- * scale and offset.  Extended, RTR and error frames are silently ignored.
+ * scale and offset.  Extended, RTR and error frames are silently ignored;
+ * a frame with less data bytes than its values need is ignored and logged
+ * once.
  *
  * @param fd_set  The read fd_set from select().
  * @param iface   Interface to service.
@@ -428,6 +440,20 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
     // check for matching CAN-ID
     if ((rcvd_frame.can_id & CAN_SFF_MASK) != (canid_t) frame->can_id) {
       continue;
+    }
+
+    // a frame not containing all values is ignored
+    if (rcvd_frame.can_dlc < frame->min_dlc) {
+      if (!frame->too_short) {
+        syslog(LOG_WARNING, "CAN frame 0x%x on '%s' has %d data bytes, expected %d; values ignored.",
+          frame->can_id, iface->interface, rcvd_frame.can_dlc, frame->min_dlc);
+        frame->too_short = true;
+      }
+      continue;
+    }
+    if (frame->too_short) {
+      syslog(LOG_INFO, "CAN frame 0x%x on '%s' complete again.", frame->can_id, iface->interface);
+      frame->too_short = false;
     }
 
     for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {

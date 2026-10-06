@@ -225,6 +225,43 @@ def test_can():
         scenario(env, broker, conf, feed, stop)
 
 
+def test_can_short_frame():
+    """A frame with less data bytes than its values need is ignored."""
+    with Env() as env:
+        bus = env.can()
+        broker = env.broker()
+        sub = env.mqtt(broker.port, '#')
+        u = env.uvrgw('''can {{
+  interface = "vcan0"
+  frame {{
+    can_id = "ANA:3:0"
+    dir = in
+    value a {{ type = s16  pos = 0 }}
+    value b {{ type = s16  pos = 2 }}
+  }}
+}}
+mqtt {{
+  host = "127.0.0.1"
+  port = {mqtt}
+  value a {{ dir = out  type = number  topic = "out/a"  fmt = "%.0f" }}
+  value b {{ dir = out  type = number  topic = "out/b"  fmt = "%.0f" }}
+}}
+'''.format(mqtt=broker.port))
+        u.wait_log('mqtt connected')
+        bus.send(ana_id(3, 0), struct.pack('<hh', 1, 2))
+        sub.wait_value('out/b', 2)
+        m = sub.mark()
+        bus.send(ana_id(3, 0), struct.pack('<h', 7))
+        bus.send(ana_id(3, 0), struct.pack('<h', 8))
+        u.wait_log(r"CAN frame 0x203 on 'vcan0' has 2 data bytes, expected 4; values ignored\.")
+        bus.send(ana_id(3, 0), struct.pack('<hh', 3, 4))
+        u.wait_log(r"CAN frame 0x203 on 'vcan0' complete again\.")
+        sub.wait_value('out/b', 4, since=m)
+        assert sub.payloads('out/a', m) == ['3'], sub.payloads('out/a', m)
+        u.stop()
+        assert len(u.find('values ignored')) == 1, u.find('values ignored')
+
+
 def test_json_missing_path():
     """A missing path is logged once until it is found again."""
     with Env() as env:

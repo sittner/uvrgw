@@ -60,6 +60,8 @@ typedef struct CAN_FRAME {
   struct can_frame send_buf;        /**< TX frame buffer shared between dispatcher and TX thread. */
   pthread_mutex_t send_buf_mutex;   /**< Mutex protecting @c send_buf and @c send_time. */
   int64_t send_time;                /**< Monotonic time (ms) at which @c send_buf should be transmitted; 0 = idle. */
+  int min_dlc;                      /**< Number of data bytes used by the values. */
+  bool too_short;                   /**< Input: last received frame had less than @c min_dlc bytes (for state logging). */
 } CAN_FRAME_T;
 
 /**
