@@ -17,8 +17,6 @@
  * the device, so all relevant bits of a written register must be mapped.
  */
 #include "mb.h"
-#include "mqtt.h"
-#include "can.h"
 #include "utils.h"
 
 #include <stdio.h>
@@ -28,12 +26,7 @@
 #include <string.h>
 #include <errno.h>
 #include <syslog.h>
-#include <sys/ioctl.h>
-#include <linux/serial.h>
-#include <asm/ioctls.h>
 #include <modbus/modbus.h>
-#include <linux/can.h>
-#include <linux/can/raw.h>
 #include <pthread.h>
 #include <math.h>
 
@@ -53,11 +46,12 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child);
 static int block_configure(cfg_t *cfg, void *ctx, void *child);
 static MB_SLAVE_VAL_T *find_block_value(MB_BLOCK_T *blk, const char *name);
 static int value_configure(cfg_t *cfg, void *ctx, void *child);
-static void register_disp_cbs_master(MB_MASTER_T *master);
+static int register_disp_cbs_master(MB_MASTER_T *master);
 static void unconfigure_master(MB_MASTER_T *master);
 static int master_rtu_startup(MB_RTU_MASTER_T *rtu_master);
 static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master);
 static int master_startup(MB_MASTER_T *master);
+static int master_connect(MB_MASTER_T *master);
 static void master_shutdown(MB_MASTER_T *master);
 static void *master_thread(void *ptr);
 static int master_task(MB_MASTER_T *master, int64_t now);
@@ -67,7 +61,7 @@ static int write_schedule(void *v, double f, bool valid);
 static int write_execute(MB_SLAVE_VAL_T *val);
 static int read_block_bits(MB_BLOCK_T *blk);
 static int read_block_registers(MB_BLOCK_T *blk);
-static void link_error(MB_MASTER_T *master);
+static void link_error(MB_MASTER_T *master, int err);
 static void dispatch_value(MB_SLAVE_VAL_T *dpval, const uint16_t *regs, double sf);
 static int value_reg_count(int type);
 static uint32_t get_u32(const MB_SLAVE_VAL_T *val, const uint16_t *regs);
@@ -111,7 +105,7 @@ static int master_rtu_configure(cfg_t *cfg, void *ctx, void *child) {
   master->rts_delay = cfg_getint(cfg, "rts_delay");
 
   if (master->interface == NULL) {
-    syslog(LOG_ERR, "modbus_rtu inteface name not given.");
+    syslog(LOG_ERR, "modbus_rtu interface name not given.");
     return -1;
   }
 
@@ -144,6 +138,7 @@ static int master_configure(cfg_t *cfg, MB_MASTER_T *master) {
 
 static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   MB_SLAVE_T *slave = (MB_SLAVE_T *) child;
+  bool id_valid;
 
   slave->master = (MB_MASTER_T *) ctx;
 
@@ -152,8 +147,19 @@ static int slave_configure(cfg_t *cfg, void *ctx, void *child) {
   slave->init_value = cfg_getfloat(cfg, "init_value");
   slave->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
-  if (slave->id < 0 || slave->id > 255) {
-    syslog(LOG_ERR, "modbus slave id not given or invalid.");
+  // 1 ... 247; TCP also 0 and 255 (the device itself), RTU 0 is broadcast
+  if (slave->master->tcp) {
+    id_valid = (slave->id >= 0 && slave->id <= 247) || slave->id == MODBUS_TCP_SLAVE;
+  } else {
+    id_valid = (slave->id >= 1 && slave->id <= 247);
+  }
+  if (!id_valid) {
+    syslog(LOG_ERR, "modbus slave id %d not given or invalid.", slave->id);
+    return -1;
+  }
+
+  if (slave->interval <= 0) {
+    syslog(LOG_ERR, "modbus slave %d: interval not given or invalid.", slave->id);
     return -1;
   }
 
@@ -175,59 +181,59 @@ static int block_configure(cfg_t *cfg, void *ctx, void *child) {
   blk->expect_reg = cfg_getint(cfg, "expect_reg");
   blk->expect_value = cfg_getint(cfg, "expect_value");
 
+  if (blk->addr < 0) {
+    syslog(LOG_ERR, "modbus slave %d: block addr not given.", slave->id);
+    return -1;
+  }
+
   if (blk->dir < 0) {
-    syslog(LOG_ERR, "modbus block dir not given.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): dir not given.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->regtype < 0) {
-    syslog(LOG_ERR, "modbus block regtype not given.");
-    return -1;
-  }
-
-  if (blk->addr < 0) {
-    syslog(LOG_ERR, "modbus block addr not given.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): regtype not given.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->count <= 0) {
-    syslog(LOG_ERR, "modbus block count not given or invalid.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): count not given or invalid.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->dir == UVRGW_CONF_VAL_DIR_OUT &&
       (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INREG)) {
-    syslog(LOG_ERR, "modbus output block must not use read-only regtype inbit/inreg.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): output block must not use read-only regtype inbit/inreg.", slave->id, blk->addr);
     return -1;
   }
 
   // checks are only possible on input register blocks
   if ((blk->sunspec_na || blk->expect_reg >= 0 || blk->expect_value >= 0) &&
       (blk->dir != UVRGW_CONF_VAL_DIR_IN || blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT)) {
-    syslog(LOG_ERR, "modbus block: sunspec_na and expect_reg/expect_value are only allowed for input register blocks.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): sunspec_na and expect_reg/expect_value are only allowed for input register blocks.", slave->id, blk->addr);
     return -1;
   }
 
   if ((blk->expect_reg >= 0) != (blk->expect_value >= 0)) {
-    syslog(LOG_ERR, "modbus block: expect_reg and expect_value must be given together.");
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): expect_reg and expect_value must be given together.", slave->id, blk->addr);
     return -1;
   }
 
   if (blk->expect_reg >= blk->count || blk->expect_value > 0xffff) {
-    syslog(LOG_ERR, "modbus block: expect_reg %d / expect_value %d out of range.", blk->expect_reg, blk->expect_value);
+    syslog(LOG_ERR, "modbus slave %d block (addr %d): expect_reg %d / expect_value %d out of range.", slave->id, blk->addr, blk->expect_reg, blk->expect_value);
     return -1;
   }
 
   if (blk->regtype == UVRGW_CONF_MB_REG_TYPE_INBIT || blk->regtype == UVRGW_CONF_MB_REG_TYPE_BIT) {
     int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_BITS : MODBUS_MAX_WRITE_BITS;
     if (blk->count > max_count) {
-      syslog(LOG_ERR, "modbus block count %d exceeds maximum %d for bit registers.", blk->count, max_count);
+      syslog(LOG_ERR, "modbus slave %d block (addr %d): count %d exceeds maximum %d for bit registers.", slave->id, blk->addr, blk->count, max_count);
       return -1;
     }
   } else {
     int max_count = (blk->dir == UVRGW_CONF_VAL_DIR_IN) ? MODBUS_MAX_READ_REGISTERS : MODBUS_MAX_WRITE_REGISTERS;
     if (blk->count > max_count) {
-      syslog(LOG_ERR, "modbus block count %d exceeds maximum %d for registers.", blk->count, max_count);
+      syslog(LOG_ERR, "modbus slave %d block (addr %d): count %d exceeds maximum %d for registers.", slave->id, blk->addr, blk->count, max_count);
       return -1;
     }
   }
@@ -379,6 +385,12 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     }
   }
 
+  // outputs divide by scale
+  if (val->block->dir == UVRGW_CONF_VAL_DIR_OUT && val->scale == 0.0) {
+    syslog(LOG_ERR, "modbus value '%s': scale of an output must not be 0.", val->name);
+    return -1;
+  }
+
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->block->dir == UVRGW_CONF_VAL_DIR_OUT));
   if (val->disp == NULL) {
     return -1;
@@ -399,21 +411,27 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
-void mb_register_disp_cbs(void) {
+int mb_register_disp_cbs(void) {
   MB_RTU_MASTER_T *rtu_master;
   MB_TCP_MASTER_T *tcp_master;
   int master_idx;
 
   for (rtu_master = rtu_masters, master_idx = 0; master_idx < rtu_masters_count; rtu_master++, master_idx++) {
-    register_disp_cbs_master((MB_MASTER_T *) rtu_master);
+    if (register_disp_cbs_master((MB_MASTER_T *) rtu_master) < 0) {
+      return -1;
+    }
   }
 
   for (tcp_master = tcp_masters, master_idx = 0; master_idx < tcp_masters_count; tcp_master++, master_idx++) {
-    register_disp_cbs_master((MB_MASTER_T *) tcp_master);
+    if (register_disp_cbs_master((MB_MASTER_T *) tcp_master) < 0) {
+      return -1;
+    }
   }
+
+  return 0;
 }
 
-static void register_disp_cbs_master(MB_MASTER_T *master) {
+static int register_disp_cbs_master(MB_MASTER_T *master) {
   MB_SLAVE_T *slave;
   int slave_idx;
   MB_BLOCK_T *blk;
@@ -424,12 +442,14 @@ static void register_disp_cbs_master(MB_MASTER_T *master) {
   for (slave = master->slaves, slave_idx = 0; slave_idx < master->slaves_count; slave++, slave_idx++) {
     for (blk = slave->blocks, blk_idx = 0; blk_idx < slave->blocks_count; blk++, blk_idx++) {
       for (val = blk->values, val_idx = 0; val_idx < blk->values_count; val++, val_idx++) {
-        if (blk->dir == UVRGW_CONF_VAL_DIR_OUT) {
-          uvrgw_conf_register_disp_cb(val->disp, val, write_schedule);
+        if (blk->dir == UVRGW_CONF_VAL_DIR_OUT && uvrgw_conf_register_disp_cb(val->disp, val, write_schedule) < 0) {
+          return -1;
         }
       }
     }
   }
+
+  return 0;
 }
 
 void mb_unconfigure(void) {
@@ -509,37 +529,15 @@ static int master_rtu_startup(MB_RTU_MASTER_T *rtu_master) {
     goto fail1;
   }
 
-  // RTU master is connected the whole time, so open here
-  if (modbus_connect(master->ctx) < 0) {
-    syslog(LOG_ERR, "Could not open modbus device");
-    goto fail1;
-  }
-
-  if (modbus_rtu_set_serial_mode(master->ctx, rtu_master->mode)) {
-    syslog(LOG_ERR, "Could not set modbus RS485 mode");
-    goto fail2;
-  }
-
-  if (modbus_rtu_set_rts(master->ctx, rtu_master->rts)) {
-    syslog(LOG_ERR, "Could not set modbus RTS mode");
-    goto fail2;
-  }
-
-  if (rtu_master->rts_delay >= 0) {
-    if (modbus_rtu_set_rts_delay(master->ctx, rtu_master->rts_delay)) {
-      syslog(LOG_ERR, "Could not set modbus RTS delay");
-      goto fail2;
-    }
-  }
+  // open on demand in master thread (see master_connect())
+  master->reconnect = true;
 
   if (master_startup(master) < 0) {
-    goto fail2;
+    goto fail1;
   }
 
   return 0;
 
-fail2:
-  modbus_close(master->ctx);
 fail1:
   modbus_free(master->ctx);
   master->ctx = NULL;
@@ -561,8 +559,9 @@ static int master_tcp_startup(MB_TCP_MASTER_T *tcp_master) {
     goto fail1;
   }
 
-  // connect on demand in master thread (libmodbus link recovery is not
-  // used, as it retries endlessly while the server is unreachable)
+  // connect on demand in master thread (see master_connect(); libmodbus
+  // link recovery is not used, as it retries endlessly while the server
+  // is unreachable)
   master->reconnect = true;
 
   if (master_startup(master) < 0) {
@@ -649,6 +648,59 @@ static void *master_thread(void *ptr) {
 }
 
 /**
+ * @brief Connect a TCP master or open the serial port of an RTU master.
+ *
+ * A failure is logged once until the connection is established.
+ *
+ * @param master  Master to connect.
+ * @return        0 on success, -1 on error.
+ */
+static int master_connect(MB_MASTER_T *master) {
+  MB_TCP_MASTER_T *tcp_master = (MB_TCP_MASTER_T *) master;
+  MB_RTU_MASTER_T *rtu_master = (MB_RTU_MASTER_T *) master;
+  int err;
+
+  if (modbus_connect(master->ctx) < 0) {
+    goto fail;
+  }
+
+  // RTU: line settings need the open port
+  if (!master->tcp) {
+    if (modbus_rtu_set_serial_mode(master->ctx, rtu_master->mode) < 0 ||
+        modbus_rtu_set_rts(master->ctx, rtu_master->rts) < 0 ||
+        (rtu_master->rts_delay >= 0 && modbus_rtu_set_rts_delay(master->ctx, rtu_master->rts_delay) < 0)) {
+      err = errno;
+      modbus_close(master->ctx);
+      errno = err;
+      goto fail;
+    }
+  }
+
+  if (master->connect_failed) {
+    if (master->tcp) {
+      syslog(LOG_INFO, "Connected to MODBUS TCP server %s:%d", tcp_master->ip, tcp_master->port);
+    } else {
+      syslog(LOG_INFO, "MODBUS RTU device %s opened", rtu_master->interface);
+    }
+    master->connect_failed = false;
+  }
+
+  return 0;
+
+fail:
+  if (!master->connect_failed) {
+    if (master->tcp) {
+      syslog(LOG_WARNING, "Could not connect to MODBUS TCP server %s:%d: %s", tcp_master->ip, tcp_master->port, modbus_strerror(errno));
+    } else {
+      syslog(LOG_WARNING, "Could not open MODBUS RTU device %s: %s", rtu_master->interface, modbus_strerror(errno));
+    }
+    master->connect_failed = true;
+  }
+
+  return -1;
+}
+
+/**
  * @brief Single poll iteration for one master.
  *
  * Advances through slaves and processes one read and one write
@@ -662,25 +714,22 @@ static void *master_thread(void *ptr) {
  */
 static int master_task(MB_MASTER_T *master, int64_t now) {
   MB_SLAVE_T *slave;
-  MB_TCP_MASTER_T *tcp_master;
   int ret;
 
-  // (re)connect TCP master on demand
+  // (re)connect on demand
   if (master->reconnect) {
-    tcp_master = (MB_TCP_MASTER_T *) master;
-    if (modbus_connect(master->ctx) < 0) {
-      if (!master->connect_failed) {
-        syslog(LOG_WARNING, "Could not connect to MODBUS TCP server %s:%d: %s", tcp_master->ip, tcp_master->port, modbus_strerror(errno));
-        master->connect_failed = true;
-      }
+    if (master_connect(master) < 0) {
       master->next_transaction = utl_get_ticks() + MASTER_RECONNECT_DELAY_MS;
       return 0;
     }
-    if (master->connect_failed) {
-      syslog(LOG_INFO, "Connected to MODBUS TCP server %s:%d", tcp_master->ip, tcp_master->port);
-      master->connect_failed = false;
-    }
     master->reconnect = false;
+  }
+
+  // RTU: discard data received outside of a transaction (a response
+  // arriving after its timeout would be taken as the response to the
+  // next request, shifting all following ones)
+  if (!master->tcp) {
+    modbus_flush(master->ctx);
   }
 
   // get current slave
@@ -763,14 +812,22 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
 
   if (ret < 0) {
     err = errno;
-    syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(err));
+    if (!blk->read_failed) {
+      syslog(LOG_WARNING, "Failed to read MODBUS block of slave %d (start %d, len %d): %s", slave->id, blk->addr, blk->count, modbus_strerror(err));
+      blk->read_failed = true;
+    }
 
     // no response from slave (e.g. timeout, connection lost): skip remaining blocks until next poll
     if (err < MODBUS_ENOBASE) {
       slave->next_poll = now + slave->interval;
-      link_error(slave->master);
+      link_error(slave->master, err);
     }
     return -1;
+  }
+
+  if (blk->read_failed) {
+    syslog(LOG_INFO, "MODBUS block of slave %d (start %d) read again.", slave->id, blk->addr);
+    blk->read_failed = false;
   }
 
   return 1;
@@ -780,16 +837,22 @@ static int slave_task_read(MB_SLAVE_T *slave, int64_t now) {
  * @brief Write one pending output value from @p slave's pending list.
  *
  * Walks @c value_out_curr until a value with @c write_pending is found,
- * then calls write_execute().
+ * then calls write_execute().  After a failed write (which stays pending)
+ * the writes of the slave pause for its poll interval.
  *
  * @param slave  Slave to service.
- * @param now    Current monotonic timestamp (ms, unused but kept for API consistency).
+ * @param now    Current monotonic timestamp (ms).
  * @return       1 if a write was performed, 0 if nothing was pending,
  *               -1 on Modbus error.
  */
 static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
   int ret;
   MB_SLAVE_VAL_T *val;
+
+  // pause after a failed write
+  if (slave->next_write > now) {
+    return 0;
+  }
 
   // process next pending value
   while (true) {
@@ -801,6 +864,9 @@ static int slave_task_write(MB_SLAVE_T *slave, int64_t now) {
 
     // execute write, if pending (only one request per timer period)
     ret = write_execute(val);
+    if (ret < 0) {
+      slave->next_write = utl_get_ticks() + slave->interval;
+    }
     if (ret != 0) {
       return ret;
     }
@@ -1072,8 +1138,12 @@ static int write_schedule(void *v, double f, bool valid) {
  * @brief Execute a pending Modbus write for one value.
  *
  * Atomically reads and clears @c write_pending, then issues the
- * appropriate modbus_write_bit() or modbus_write_register() call.
+ * appropriate modbus_write_bit() or modbus_write_register() call.  A
+ * failed write stays pending (unless a newer value was queued meanwhile),
+ * so it is retried.
  * For bitmask values the shared @c valbuf is updated before writing.
+ * Integer values are rounded to the nearest integer and limited to the
+ * range of their type.
  *
  * @param val  Value to write.
  * @return     1 if a write was issued, 0 if nothing was pending,
@@ -1084,7 +1154,7 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   MB_MASTER_T *master = slave->master;
   int addr = val->block->addr + val->reg;
   bool pending;
-  double f;
+  double f, queued;
   uint16_t *buf;
   uint16_t regs[2];
   float f32;
@@ -1095,6 +1165,7 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
   pthread_mutex_lock(&master->write_lock);
   pending = val->write_pending;
   f = val->write_value;
+  queued = f;
   val->write_pending = false;
   pthread_mutex_unlock(&master->write_lock);
 
@@ -1115,20 +1186,20 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
       break;
     case UVRGW_CONF_MB_TYPE_S16:
       f = (f - val->offset) / val->scale;
-      ret = modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
+      ret = modbus_write_register(master->ctx, addr, (int16_t) utl_val_limit(round(f), INT16_MIN, INT16_MAX));
       break;
     case UVRGW_CONF_MB_TYPE_U16:
       f = (f - val->offset) / val->scale;
-      ret = modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
+      ret = modbus_write_register(master->ctx, addr, (uint16_t) utl_val_limit(round(f), 0.0, UINT16_MAX));
       break;
     case UVRGW_CONF_MB_TYPE_S32:
       f = (f - val->offset) / val->scale;
-      set_u32(val, regs, (uint32_t) ((int32_t) utl_val_limit(f, INT32_MIN, INT32_MAX)));
+      set_u32(val, regs, (uint32_t) ((int32_t) utl_val_limit(round(f), INT32_MIN, INT32_MAX)));
       ret = modbus_write_registers(master->ctx, addr, 2, regs);
       break;
     case UVRGW_CONF_MB_TYPE_U32:
       f = (f - val->offset) / val->scale;
-      set_u32(val, regs, (uint32_t) utl_val_limit(f, 0.0, UINT32_MAX));
+      set_u32(val, regs, (uint32_t) utl_val_limit(round(f), 0.0, UINT32_MAX));
       ret = modbus_write_registers(master->ctx, addr, 2, regs);
       break;
     case UVRGW_CONF_MB_TYPE_F32:
@@ -1152,11 +1223,28 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
 
   if (ret < 0) {
     err = errno;
-    syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
+    if (!val->write_failed) {
+      syslog(LOG_WARNING, "Failed to write MODBUS value '%s' to slave %d (addr %d): %s", val->name, slave->id, addr, modbus_strerror(err));
+      val->write_failed = true;
+    }
+
+    // keep the value for a retry, a newer one wins
+    pthread_mutex_lock(&master->write_lock);
+    if (!val->write_pending) {
+      val->write_value = queued;
+      val->write_pending = true;
+    }
+    pthread_mutex_unlock(&master->write_lock);
+
     if (err < MODBUS_ENOBASE) {
-      link_error(master);
+      link_error(master, err);
     }
     return -1;
+  }
+
+  if (val->write_failed) {
+    syslog(LOG_INFO, "MODBUS value '%s' written to slave %d again.", val->name, slave->id);
+    val->write_failed = false;
   }
 
   return 1;
@@ -1165,15 +1253,17 @@ static int write_execute(MB_SLAVE_VAL_T *val) {
 /**
  * @brief Handle a transaction without valid response (timeout, I/O error).
  *
- * For TCP masters the connection is closed, so it is re-established
- * before the next transaction (this also discards late responses).
+ * The connection is closed, so it is re-established before the next
+ * transaction: for TCP masters always (this also discards late
+ * responses), for RTU masters unless it was a timeout, which is a slave
+ * not answering and not a problem of the serial port.
  *
  * @param master  Master the failed transaction belongs to.
+ * @param err     errno of the failed transaction.
  */
-static void link_error(MB_MASTER_T *master) {
-  if (master->tcp) {
+static void link_error(MB_MASTER_T *master, int err) {
+  if (master->tcp || err != ETIMEDOUT) {
     modbus_close(master->ctx);
     master->reconnect = true;
   }
 }
-

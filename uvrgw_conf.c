@@ -28,6 +28,7 @@
 #include "utils.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -58,7 +59,7 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
 
 static char *owner_str(const char *module, const char *instance);
 static int check_dispatchers(void);
-static void init_dispatcher(void);
+static int init_dispatcher(void);
 static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool valid);
 static void *watchdog_thread(void *ptr);
 static void watchdog_check(UVRGW_CONF_VAL_DISPATCH_T *dp, int64_t now);
@@ -90,7 +91,7 @@ static cfg_opt_t mqtt_logger_opts[] = {
 };
 
 static cfg_opt_t mqtt_opts[] = {
-  CFG_STR("host", "localhost", CFGF_NONE),
+  CFG_STR("host", NULL, CFGF_NONE),
   CFG_INT("port", 1883, CFGF_NONE),
   CFG_STR("client_id", NULL, CFGF_NONE),
   CFG_STR("user", NULL, CFGF_NONE),
@@ -101,7 +102,7 @@ static cfg_opt_t mqtt_opts[] = {
   CFG_BOOL("retain", cfg_false, CFGF_NONE),
   CFG_FLOAT("init_value", 0.0, CFGF_NONE),
   CFG_INT("stale_timeout", 0, CFGF_NONE),
-  CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", mqtt_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_SEC("logger", mqtt_logger_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
@@ -124,7 +125,7 @@ static cfg_opt_t json_opts[] = {
   CFG_STR("valid_if", NULL, CFGF_NONE),
   CFG_FLOAT("init_value", 0.0, CFGF_NONE),
   CFG_INT("stale_timeout", 0, CFGF_NONE),
-  CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", json_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -141,7 +142,7 @@ static cfg_opt_t can_frame_val_opts[] = {
 static cfg_opt_t can_frame_opts[] = {
   CFG_INT_CB("can_id", -1, CFGF_NONE, parse_can_id),
   CFG_INT_CB("dir", -1, CFGF_NONE, parse_val_dir),
-  CFG_SEC("value", can_frame_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", can_frame_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -176,7 +177,7 @@ static cfg_opt_t mb_block_opts[] = {
   CFG_BOOL("sunspec_na", cfg_false, CFGF_NONE),
   CFG_INT("expect_reg", -1, CFGF_NONE),
   CFG_INT("expect_value", -1, CFGF_NONE),
-  CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("value", mb_block_val_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -248,7 +249,7 @@ static cfg_opt_t sunspec_meter_opts[] = {
 static cfg_opt_t sunspec_server_opts[] = {
   CFG_STR("bind", "0.0.0.0", CFGF_NONE),
   CFG_INT("port", MODBUS_TCP_DEFAULT_PORT, CFGF_NONE),
-  CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("meter", sunspec_meter_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
 
@@ -283,7 +284,7 @@ static cfg_opt_t opts[] = {
   CFG_SEC("modbus_rtu", mb_rtu_opts, CFGF_MULTI),
   CFG_SEC("modbus_tcp", mb_tcp_opts, CFGF_MULTI),
   CFG_SEC("sunspec_server", sunspec_server_opts, CFGF_MULTI),
-  CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE),
+  CFG_SEC("counter", counter_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_SEC("eval", eval_opts, CFGF_MULTI | CFGF_TITLE | CFGF_NO_TITLE_DUPES),
   CFG_END()
 };
@@ -361,7 +362,7 @@ static UVRGW_CONF_VAL_DISPATCH_T *disp;
 static char *state_dir;
 
 static pthread_t watchdog;
-static bool watchdog_running;
+static atomic_bool watchdog_running;
 
 static int parse_map(const MAP_ITEM_T *map, cfg_t *cfg, cfg_opt_t *opt, const char *value, void *result) {
   for (; map->str != NULL; map++) {
@@ -416,13 +417,13 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
   char *p;
 
   if (strncmp(value, "ANA:", 4) == 0) {
-    value += 4;
-    node = strtol(value, &p, 10);
+    node = strtol(value + 4, &p, 10);
     if (*p != ':') {
       goto fail;
     }
     chan = strtol(p + 1, &p, 10);
-    if (*p != 0) {
+    // chan is the first channel of the frame (4 channels per frame)
+    if (*p != 0 || node < 0 || node > 0x3f || chan < 0 || chan > 0x1f || (chan & 3) != 0) {
       goto fail;
     }
     *((int *) result) = 0x200 | (node & 0x3f) | (((chan) & 0x0c) << 5) | (((chan) & 0x10) << 2);
@@ -430,9 +431,8 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
   }
 
   if (strncmp(value, "DIG:", 4) == 0) {
-    value += 4;
-    node = strtol(value, &p, 10);
-    if (*p != 0) {
+    node = strtol(value + 4, &p, 10);
+    if (*p != 0 || node < 0 || node > 0x3f) {
       goto fail;
     }
     *((int *) result) = 0x180 | (node & 0x3f);
@@ -440,8 +440,7 @@ static int parse_can_id(cfg_t *cfg, cfg_opt_t *opt, const char *value, void *res
   }
 
   if (strncmp(value, "0x", 2) == 0) {
-    value += 2;
-    *((int *) result) = strtol(value, &p, 16);
+    *((int *) result) = strtol(value + 2, &p, 16);
     if (*p != 0) {
       goto fail;
     }
@@ -541,12 +540,14 @@ int uvrgw_conf_load(const char *file) {
     goto fail2;
   }
 
-  init_dispatcher();
-  can_register_disp_cbs();
-  mb_register_disp_cbs();
-  mqtt_register_disp_cbs();
-  counter_register_disp_cbs();
-  eval_register_disp_cbs();
+  if (init_dispatcher()) {
+    goto fail2;
+  }
+
+  if (can_register_disp_cbs() || mb_register_disp_cbs() || mqtt_register_disp_cbs() ||
+      counter_register_disp_cbs() || eval_register_disp_cbs()) {
+    goto fail2;
+  }
 
   cfg_free(cfg);
   return 0;
@@ -675,6 +676,11 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatcher(const char *name, bool allo
       return NULL;
     }
     dp->name = uvrgw_conf_strdup(name);
+    if (dp->name == NULL) {
+      syslog(LOG_ERR, "Failed to allocate dispatcher for value '%s'.", name);
+      free(dp);
+      return NULL;
+    }
     pthread_mutex_init(&dp->disp_lock, NULL);
     pthread_mutex_init(&dp->last_lock, NULL);
 
@@ -820,15 +826,23 @@ UVRGW_CONF_VAL_DISPATCH_T *uvrgw_conf_get_dispatchers(void) {
   return disp;
 }
 
-static void init_dispatcher(void) {
+static int init_dispatcher(void) {
   UVRGW_CONF_VAL_DISPATCH_T *dp;
 
   dp = disp;
   while (dp != NULL) {
     dp->value_cbs_pos = 0;
-    dp->value_cbs = calloc(dp->value_count, sizeof(UVRGW_CONF_DISPATCH_CB_VAL_T));
+    if (dp->value_count > 0) {
+      dp->value_cbs = calloc(dp->value_count, sizeof(UVRGW_CONF_DISPATCH_CB_VAL_T));
+      if (dp->value_cbs == NULL) {
+        syslog(LOG_ERR, "Failed to allocate callbacks of value '%s'.", dp->name);
+        return -1;
+      }
+    }
     dp = dp->next;
   }
+
+  return 0;
 }
 
 /**
@@ -912,7 +926,7 @@ static void fire_cbs(UVRGW_CONF_VAL_DISPATCH_T *dp, void *val, double f, bool va
 
   for (cbv = dp->value_cbs, i = 0; i < dp->value_count; i++, cbv++) {
     if (cbv->cb != NULL && cbv->val != val) {
-      // TODO: handle error
+      // errors are logged by the callback (once per state change)
       cbv->cb(cbv->val, f, valid);
     }
   }

@@ -6,7 +6,7 @@
 
 ## Features
 
-- **CAN bus** (Linux SocketCAN) — receive and transmit CAN frames with typed values (`bit`, `u8`, `s8`, `u16`, `s16`, `u32`, `s32`).  Supports periodic NTP-synced timestamp injection on CAN ID `0x100`.  UVR-specific `ANA:node:chan` and `DIG:node` shorthand for CAN IDs.
+- **CAN bus** (Linux SocketCAN) — receive and transmit CAN frames with typed values (`bit`, `u8`, `s8`, `u16`, `s16`, `u32`, `s32`).  Supports periodic timestamp injection on CAN ID `0x100`.  UVR-specific `ANA:node:chan` and `DIG:node` shorthand for CAN IDs.
 - **Modbus RTU and TCP** — poll Modbus slaves on configurable intervals; read holding registers, input registers, coils and discrete inputs; write holding registers and coils.  Supports 16/32-bit integer (`s16`, `u16`, `s32`, `u32`), 32-bit float (`f32`), bit and bitmask value types with an optional per-value scale-factor register.
 - **MQTT** (via libmosquitto) — publish and subscribe with configurable topics, QoS, retain flag and a last-will state topic.  Value types: `number` (printf-style format string), `switch` (`ON`/`OFF`), `contact` (`OPEN`/`CLOSED`).
 - **REST/JSON** (via libcurl + json-c) — periodically HTTP-GET a JSON endpoint and extract values by dot-separated JSON path (arrays by numeric index).  Input only.
@@ -15,7 +15,7 @@
 - **Calculated values and control logic** — `eval` sections define values by expressions over other values (arithmetic, comparison, logic, hysteresis, ...), evaluated periodically or when input values arrive.
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **Stalled data handling** — an input value can fall back to a configured value when its source stops delivering (`stale_timeout`); the logger writes `null` and SunSpec meters report a failure for such values.
-- **NTP synchronisation guard** — CAN timestamp frames are only sent when the local NTP daemon reports a synchronised clock.
+- **Clock synchronisation guard** — CAN timestamp frames are only sent and logger snapshots only taken while the system clock is synchronised (kernel time status, maintained by ntpd, chrony or systemd-timesyncd).
 - Single configuration file, libconfuse-based syntax.
 - Clean shutdown on `SIGINT` / `SIGTERM`.
 
@@ -52,6 +52,25 @@ Install to `/usr/bin/uvrgw` and the systemd unit to `/lib/systemd/system/uvrgw.s
 ```bash
 sudo make install
 ```
+
+---
+
+## Testing
+
+```bash
+make test
+```
+
+The test suite (`test/`, Python 3 standard library only) runs the built binary against local fakes of every device type: a mosquitto broker, a JSON HTTP server, Modbus TCP and Modbus RTU (on a pty) devices, CAN on a `vcan0` interface and Modbus TCP reads of the SunSpec meters.  It covers the config checks, `stale_timeout` / `init_value` inheritance of all input sections, timeouts and recovery of every input type, the consumers (logger, SunSpec register map and client limit, counters, eval), outputs, MQTT loopback, device failures and resets racing with real data.  If `uvrgw.conf` exists in the source directory, it is loaded and run as well, with all connections redirected to the local fakes.
+
+Requirements: `gcc`, `python3`, `mosquitto` (the broker binary, not running as a service is fine), `valgrind` for `--valgrind`, and for the CAN tests a virtual CAN interface (skipped without it):
+
+```bash
+sudo ip link add vcan0 type vcan
+sudo ip link set vcan0 up
+```
+
+Options (`python3 test/run.py --help`): `--valgrind` runs uvrgw under valgrind (memory errors and leaks fail the test), `--slow` runs the race test for 5 minutes instead of 30 s, `-k PATTERN` selects tests by name, and a binary path can be given instead of `./uvrgw`.  The logs of all uvrgw runs are kept in the printed temp directory if a test fails.
 
 ---
 
@@ -173,6 +192,8 @@ mqtt {
 
 **MQTT connection:** if the broker is not reachable (also at startup), the connection is retried automatically; connection changes are logged.
 
+**QoS:** `qos` of the section is the default of its values (and of the state topic).  With `qos` ≥ 1, every value published while the broker is not connected is kept in memory by libmosquitto and delivered after reconnect; the memory is not limited, so a long outage with many values can exhaust it.  Use `qos = 0` for values (the next update replaces a lost one) and leave QoS 1 to the loggers, which have their own `qos` (default 1).
+
 #### Logger (value snapshots for databases)
 
 A `logger` inside an `mqtt` section publishes a JSON snapshot of selected values every `interval` seconds, aligned to the clock (e.g. xx:00, xx:05, ...):
@@ -268,12 +289,12 @@ json {
 ```
 can {
   interface        = "can0"
-  timestamp_period = 60000   # send NTP timestamp every 60 s (0 = disabled)
+  timestamp_period = 60000   # send timestamp every 60 s (0 = disabled), only while the clock is synchronised
   send_timeout     = 1000    # coalesce output writes within 1 000 ms
 
   # Receive frame (CAN → value dispatcher)
   frame {
-    can_id = "ANA:1:1"   # UVR analogue node 1, channel 1  (or 0x201, or decimal)
+    can_id = "ANA:1:0"   # UVR analogue node 1, frame starting at channel 0  (or 0x201, or decimal)
     dir    = in
 
     value "outdoor_temp" {
@@ -301,7 +322,7 @@ can {
 
 | Syntax | Meaning | Example |
 |--------|---------|---------|
-| `ANA:node:chan` | UVR analogue frame | `ANA:1:1` → `0x201` |
+| `ANA:node:chan` | UVR analogue frame; `chan` is the first channel of the frame (0, 4, … 28), a frame has 4 channels | `ANA:1:0` → `0x201`, `ANA:1:4` → `0x281` |
 | `DIG:node` | UVR digital frame | `DIG:2` → `0x182` |
 | `0x…` | Hexadecimal literal | `0x1FF` |
 | decimal | Decimal literal | `511` |
@@ -408,7 +429,9 @@ modbus_tcp {
 - A float NaN (SunSpec "not implemented") is treated as invalid reading and not forwarded.
 - `bit` values are only allowed in `inbit`/`bit` blocks, all other types only in `inreg`/`reg` blocks.  Output blocks must use `bit` or `reg`.
 - If a block read fails with a Modbus exception, polling continues with the next block; if the slave does not respond at all, the remaining blocks are skipped until the next poll interval.
-- Modbus TCP connections are opened on demand.  If the server is unreachable, the connection is retried every second; after a timeout or I/O error the connection is closed and re-established before the next request.
+- `interval` is required for every slave (also for slaves with output blocks only) and must be positive.
+- A failed write is kept and retried after the `interval` of the slave, until it succeeds or a newer value arrives.
+- Modbus TCP connections and Modbus RTU serial ports are opened on demand.  If the server is unreachable or the serial device missing (also at startup), opening is retried every second.  A TCP connection is closed and re-established after a timeout or I/O error, a serial port after an I/O error (e.g. USB adapter unplugged).
 - Bitmask outputs are written from a local register image that starts at 0 and is not read back from the device.  Writing one bit therefore also writes all other bits of that register — map every relevant bit of such a register as an output.
 
 ### Persistent counters

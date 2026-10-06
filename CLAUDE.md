@@ -56,23 +56,29 @@ Never write to production systems:
   with read-only requests (`mbpoll` reads, HTTP GET).  Never write
   registers.
 
-Methods that work:
-- `LD_PRELOAD` shim redirecting `syslog`/`__syslog_chk` to stderr; to
-  capture MQTT output, the shim also replaces `mosquitto_publish()`
-  (print topic and payload, return 0).
-- Local broker: `/usr/sbin/mosquitto -p <port>`.  `mosquitto_sub` and
-  python paho are not installed.
-- Fake JSON source: `python3 -m http.server <port> --bind 127.0.0.1 -d
-  <dir>`, the test rewrites files atomically (`os.replace`); deleting a
-  file makes the source fail (HTTP 404).
-- Drive everything from one Python script with `subprocess.Popen`; stop
-  uvrgw with `send_signal(SIGINT)` and `wait(timeout=...)` to detect
-  shutdown hangs.  Run once under `valgrind --leak-check=full`.
-- Production config check: copy `uvrgw.conf`, prepend
-  `state_dir = "<scratch dir>"` (no `/var/lib/uvrgw` here), run it with
-  the shim.  CAN is not available on the dev machine, so a successful
-  load ends with "Could not set CAN interface name 'can0'" before any
-  MQTT connection.
+Test suite: `make test`, i.e. `python3 test/run.py [--valgrind]
+[--slow] [-k PATTERN] [UVRGW]` (see README "Testing"; needs `vcan0` for
+the CAN tests).  `make test` builds in the tree, so in sessions run
+`test/run.py` against the scratchpad build instead, once with
+`--valgrind`.
+
+Methods that work (in `test/uvrgwtest.py` and `test/shim.c`, reuse
+them for ad-hoc tests):
+- `LD_PRELOAD` shim redirecting `syslog`/`__syslog_chk` to stderr with
+  monotonic ms timestamps; with `UVRGW_SHIM_PUB` set it also prints
+  every `mosquitto_publish()` in log order before forwarding it.
+- Local broker: `mosquitto` with a generated config on a free port.
+  `mosquitto_sub`, `mosquitto_pub` and python paho are not installed;
+  `MqttClient` is a raw MQTT client.
+- Fake devices: `JsonServer` (data `None` answers HTTP 404),
+  `ModbusTcpServer`, `ModbusRtuServer` (pty, RS232 only), `CanBus` on
+  `vcan0`; `sunspec_power()` reads a SunSpec meter.
+- uvrgw runs under `subprocess.Popen` and is stopped with SIGINT; a
+  shutdown hang fails the test.
+- Production config check: `test_config.test_production_config` runs a
+  copy of `uvrgw.conf` with all connections redirected to local fakes
+  (credentials removed, RS485 switched to RS232 for the pty) and checks
+  that it starts and shuts down cleanly.
 
 Pitfalls:
 - Do not background `cd x && prog &` chains in the shell, and do not use

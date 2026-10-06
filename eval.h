@@ -115,8 +115,10 @@ int eval_configure(cfg_t *cfg);
 
 /**
  * @brief Register the trigger callbacks of all evals.
+ *
+ * @return  0 on success, -1 on error.
  */
-void eval_register_disp_cbs(void);
+int eval_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by eval_configure().

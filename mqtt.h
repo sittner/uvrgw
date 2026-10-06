@@ -46,6 +46,7 @@ typedef struct MQTT_VAL {
   UVRGW_CONF_VAL_DISPATCH_T *disp; /**< Dispatcher for this value name. */
 
   bool invalid;        /**< Input: last payload was invalid (for state logging). */
+  bool send_failed;    /**< Output: last publish failed (for state logging). */
 } MQTT_VAL_T;
 
 /**
@@ -73,6 +74,7 @@ typedef struct MQTT_CONN {
   struct mosquitto *mosq;    /**< libmosquitto handle; NULL when not started. */
 
   bool connected;            /**< True while the MQTT session is established. */
+  bool refused;              /**< Last connection was refused by the broker (for state logging). */
 } MQTT_CONN_T;
 
 /**
@@ -94,8 +96,10 @@ int mqtt_configure(cfg_t *cfg);
  * @brief Register send callbacks for all OUT-direction MQTT values.
  *
  * Called after the dispatcher callback arrays have been allocated.
+ *
+ * @return  0 on success, -1 on error.
  */
-void mqtt_register_disp_cbs(void);
+int mqtt_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by mqtt_configure().

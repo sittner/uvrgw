@@ -18,6 +18,7 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <pthread.h>
 
@@ -36,6 +37,7 @@ typedef struct REST_VAL {
   struct REST_CONN *conn; /**< Back-pointer to the containing connection. */
 
   UVRGW_CONF_VAL_DISPATCH_T *disp; /**< Dispatcher for this value name. */
+  bool missing;          /**< Path missing or not a number in the last poll (for state logging). */
 
 } REST_VAL_T;
 
@@ -50,6 +52,7 @@ typedef struct REST_CONN {
   const char *pwd;       /**< HTTP Basic-Auth password; NULL if not required. */
   const char *valid_if;  /**< JSON path that must be present and non-zero for a poll to be used; NULL if not used. */
   bool invalid;          /**< Last poll was rejected by @c valid_if (for state logging). */
+  bool get_failed;       /**< Last GET failed or returned no JSON object (for state logging). */
   double init_value;     /**< Default @c init_value for all values of this connection. */
   int stale_timeout;     /**< Default @c stale_timeout (ms) for all values of this connection; 0 = never. */
 
@@ -57,7 +60,7 @@ typedef struct REST_CONN {
   struct REST_VAL *values; /**< Array of value definitions. */
 
   pthread_t thread;      /**< Polling thread handle. */
-  bool thread_running;   /**< Set to false to request thread termination. */
+  atomic_bool thread_running; /**< Set to false to request thread termination. */
   int64_t next_poll;     /**< Monotonic time (ms) for the next HTTP GET. */
 } REST_CONN_T;
 

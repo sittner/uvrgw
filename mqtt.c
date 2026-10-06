@@ -15,8 +15,6 @@
  */
 #include "mqtt.h"
 #include "mqtt_logger.h"
-#include "can.h"
-#include "mb.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +23,6 @@
 #include <ctype.h>
 #include <math.h>
 #include <syslog.h>
-#include <fcntl.h>
 
 #define CONST_STR_PAYLOAD(s) (sizeof(s) - 1), s
 
@@ -58,12 +55,16 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result) {
   int val_idx;
 
   if (result != 0) {
-    syslog(LOG_WARNING, "mqtt connection to %s:%d refused: %s", conn->host, conn->port, mosquitto_connack_string(result));
+    if (!conn->refused) {
+      syslog(LOG_WARNING, "mqtt connection to %s:%d refused: %s", conn->host, conn->port, mosquitto_connack_string(result));
+      conn->refused = true;
+    }
     return;
   }
 
   syslog(LOG_INFO, "mqtt connected to %s:%d", conn->host, conn->port);
   conn->connected = true;
+  conn->refused = false;
 
   if (conn->state_topic != NULL) {
     mosquitto_publish(mosq, NULL, conn->state_topic, CONST_STR_PAYLOAD("ON"), conn->qos, conn->retain);
@@ -175,6 +176,11 @@ static int conn_configure(cfg_t *cfg, void *ctx, void *child) {
     return -1;
   }
 
+  if (conn->qos < 0 || conn->qos > 2) {
+    syslog(LOG_ERR, "mqtt '%s': qos invalid.", conn->host);
+    return -1;
+  }
+
   if (uvrgw_conf_config_childs(cfg, "value", &conn->values_count, (void **) &conn->values, sizeof(MQTT_VAL_T), conn, value_configure) < 0) {
     return -1;
   }
@@ -263,13 +269,28 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
     stale_timeout = val->conn->stale_timeout;
   }
 
+  if (val->dir < 0) {
+    syslog(LOG_ERR, "mqtt value '%s': dir not given.", val->name);
+    return -1;
+  }
+
+  if (val->type < 0) {
+    syslog(LOG_ERR, "mqtt value '%s': type not given.", val->name);
+    return -1;
+  }
+
   if (val->topic == NULL) {
-    syslog(LOG_ERR, "mqtt value topic not given.");
+    syslog(LOG_ERR, "mqtt value '%s': topic not given.", val->name);
+    return -1;
+  }
+
+  if (val->qos < 0 || val->qos > 2) {
+    syslog(LOG_ERR, "mqtt value '%s': qos invalid.", val->name);
     return -1;
   }
 
   if (val->dir == UVRGW_CONF_VAL_DIR_OUT && val->type == UVRGW_CONF_MQTT_TYPE_NUMBER && val->fmt == NULL) {
-    syslog(LOG_ERR, "mqtt value fmt not given.");
+    syslog(LOG_ERR, "mqtt value '%s': fmt not given.", val->name);
     return -1;
   }
 
@@ -290,7 +311,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   return 0;
 }
 
-void mqtt_register_disp_cbs(void) {
+int mqtt_register_disp_cbs(void) {
   MQTT_CONN_T *conn;
   int conn_idx;
   MQTT_VAL_T *val;
@@ -298,11 +319,13 @@ void mqtt_register_disp_cbs(void) {
 
   for (conn = conns, conn_idx = 0; conn_idx < conns_count; conn++, conn_idx++) {
     for (val = conn->values, val_idx = 0; val_idx < conn->values_count; val++, val_idx++) {
-      if (val->dir == UVRGW_CONF_VAL_DIR_OUT) {
-        uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+      if (val->dir == UVRGW_CONF_VAL_DIR_OUT && uvrgw_conf_register_disp_cb(val->disp, val, send_value) < 0) {
+        return -1;
       }
     }
   }
+
+  return 0;
 }
 
 void mqtt_unconfigure(void) {
@@ -473,7 +496,8 @@ static void conn_destroy(MQTT_CONN_T *conn) {
  * @param v      @c MQTT_VAL_T pointer.
  * @param f      Dispatched value.
  * @param valid  Validity (unused, outputs write every value).
- * @return       0 on success, -1 on publish error.
+ * @return       0 on success, -1 on publish error (logged once until a
+ *               publish succeeds again).
  */
 static int send_value(void *v, double f, bool valid) {
   MQTT_VAL_T *val = (MQTT_VAL_T *) v;
@@ -514,10 +538,16 @@ static int send_value(void *v, double f, bool valid) {
 
   if (err != MOSQ_ERR_SUCCESS) {
     // not connected: already logged as connection state change
-    if (err != MOSQ_ERR_NO_CONN) {
+    if (err != MOSQ_ERR_NO_CONN && !val->send_failed) {
       syslog(LOG_ERR, "mqtt send of '%s' failed: %s", val->topic, mosquitto_strerror(err));
+      val->send_failed = true;
     }
     return -1;
+  }
+
+  if (val->send_failed) {
+    syslog(LOG_INFO, "mqtt send of '%s' ok again.", val->topic);
+    val->send_failed = false;
   }
 
   return 0;

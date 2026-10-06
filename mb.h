@@ -37,6 +37,7 @@
 
 #include "uvrgw_conf.h"
 
+#include <stdatomic.h>
 #include <modbus/modbus.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -70,6 +71,7 @@ typedef struct MB_SLAVE_VAL {
 
   bool write_pending;        /**< True when a new output value is queued for writing. */
   double write_value;        /**< Queued output value (valid when @c write_pending is true). */
+  bool write_failed;         /**< Last write failed (for state logging). */
 
   const char *sf_name;       /**< Name of the scale-factor companion register, or NULL. */
   struct MB_SLAVE_VAL *sf_source; /**< Resolved pointer to the scale-factor source value. */
@@ -89,6 +91,7 @@ typedef struct MB_BLOCK {
   int expect_reg;            /**< Register index (in block) to check, -1 = no check. */
   int expect_value;          /**< Expected value of @c expect_reg. */
   bool unexpected;           /**< Last read failed the check (for state logging). */
+  bool read_failed;          /**< Last read failed (for state logging). */
 
   int values_count;          /**< Number of value definitions in this block. */
   struct MB_SLAVE_VAL *values; /**< Array of value definitions. */
@@ -100,8 +103,8 @@ typedef struct MB_BLOCK {
  * @brief A Modbus slave device attached to a master.
  */
 typedef struct MB_SLAVE {
-  int id;                    /**< Modbus slave address (1–247). */
-  int interval;              /**< Polling interval in ms. */
+  int id;                    /**< Modbus slave address (1–247; TCP also 0 and 255). */
+  int interval;              /**< Polling interval in ms (> 0); also the pause after a failed write. */
   double init_value;         /**< Default @c init_value for all input values of this slave. */
   int stale_timeout;         /**< Default @c stale_timeout (ms) for all input values of this slave; 0 = never. */
 
@@ -116,6 +119,7 @@ typedef struct MB_SLAVE {
   struct MB_SLAVE_VAL *value_out_curr; /**< Current position in the output-pending write iterator. */
 
   int64_t next_poll;         /**< Monotonic time (ms) for the next poll. */
+  int64_t next_write;        /**< Monotonic time (ms) before which no write is issued (set after a failed write). */
 } MB_SLAVE_T;
 
 /**
@@ -128,18 +132,18 @@ typedef struct MB_MASTER {
   int slaves_count;          /**< Number of slave definitions. */
   struct MB_SLAVE *slaves;   /**< Array of slave definitions. */
 
-  modbus_t *ctx;             /**< libmodbus context (open while thread is running). */
+  modbus_t *ctx;             /**< libmodbus context (connected on demand by the thread). */
   pthread_mutex_t write_lock; /**< Mutex serialising write_schedule() vs the polling thread. */
 
   pthread_t thread;          /**< Polling thread handle. */
-  bool thread_running;       /**< Set to false to request thread termination. */
+  atomic_bool thread_running; /**< Set to false to request thread termination. */
   int64_t next_transaction;  /**< Earliest monotonic time (ms) for the next transaction. */
 
   int slave_curr_idx;        /**< Index of the slave currently being serviced. */
 
   bool tcp;                  /**< True for TCP masters (connection handled on demand). */
-  bool reconnect;            /**< TCP only: connection must be (re)established before the next transaction. */
-  bool connect_failed;       /**< TCP only: last connect attempt failed (suppresses repeated log messages). */
+  bool reconnect;            /**< Connection must be (re)established before the next transaction. */
+  bool connect_failed;       /**< Last connect attempt failed (suppresses repeated log messages). */
 } MB_MASTER_T;
 
 /**
@@ -191,8 +195,10 @@ int mb_configure(cfg_t *cfg);
  * @brief Register write callbacks for all OUT-direction Modbus values.
  *
  * Called after the dispatcher callback arrays have been allocated.
+ *
+ * @return  0 on success, -1 on error.
  */
-void mb_register_disp_cbs(void);
+int mb_register_disp_cbs(void);
 
 /**
  * @brief Free all resources allocated by mb_configure().

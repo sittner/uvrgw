@@ -9,32 +9,24 @@
  *
  * The TX thread wakes every IFACE_THREAD_PERIOD_US microseconds and:
  *  - transmits any pending outbound frame whose @c send_time has elapsed;
- *  - sends an NTP-synced timestamp frame on CAN ID 0x100 when
+ *  - sends a timestamp frame on CAN ID 0x100 (while the clock is synchronised) when
  *    @c timestamp_period is non-zero and the period has elapsed.
  */
 #include "can.h"
-#include "mqtt.h"
-#include "mb.h"
-#include "ntp_check.h"
 #include "utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/fd.h>
 #include <net/if.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
-#include <linux/types.h>
-#include <sys/eventfd.h>
 #include <syslog.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <time.h>
 #include <sys/time.h>
@@ -51,6 +43,7 @@ static int iface_startup(CAN_IFACE_T *iface);
 static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface);
 static void *iface_thread(void *ptr);
 static int iface_task(CAN_IFACE_T *iface);
+static int iface_write(CAN_IFACE_T *iface, const struct can_frame *frame);
 static uint32_t read_value(const uint8_t *p, int len);
 static void write_value(uint8_t *p, int len, uint32_t val);
 static int send_value(void *v, double f, bool valid);
@@ -65,7 +58,7 @@ int can_configure(cfg_t *cfg) {
   return uvrgw_conf_config_childs(cfg, "can", &can_ifaces_count, (void **) &can_ifaces, sizeof(CAN_IFACE_T), NULL, iface_configure);
 }
 
-void can_register_disp_cbs(void) {
+int can_register_disp_cbs(void) {
   CAN_IFACE_T *iface;
   int iface_idx;
   CAN_FRAME_T *frame;
@@ -76,12 +69,14 @@ void can_register_disp_cbs(void) {
   for (iface = can_ifaces, iface_idx = 0; iface_idx < can_ifaces_count; iface++, iface_idx++) {
     for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
       for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {
-        if (frame->dir == UVRGW_CONF_VAL_DIR_OUT) {
-          uvrgw_conf_register_disp_cb(val->disp, val, send_value);
+        if (frame->dir == UVRGW_CONF_VAL_DIR_OUT && uvrgw_conf_register_disp_cb(val->disp, val, send_value) < 0) {
+          return -1;
         }
       }
     }
   }
+
+  return 0;
 }
 
 void can_unconfigure(void) {
@@ -187,7 +182,7 @@ static int iface_configure(cfg_t *cfg, void *ctx, void *child) {
   iface->stale_timeout = cfg_getint(cfg, "stale_timeout");
 
   if (iface->interface == NULL) {
-    syslog(LOG_ERR, "CAN inteface name not given.");
+    syslog(LOG_ERR, "CAN interface name not given.");
     return -1;
   }
 
@@ -215,6 +210,16 @@ static int frame_configure(cfg_t *cfg, void *ctx, void *child) {
   frame->can_id = cfg_getint(cfg, "can_id");
   frame->dir = cfg_getint(cfg, "dir");
 
+  if (frame->can_id < 0 || frame->can_id > (int) CAN_SFF_MASK) {
+    syslog(LOG_ERR, "can '%s': frame can_id not given or invalid (0 ... 0x7ff).", frame->iface->interface);
+    return -1;
+  }
+
+  if (frame->dir < 0) {
+    syslog(LOG_ERR, "can '%s': frame 0x%x: dir not given.", frame->iface->interface, frame->can_id);
+    return -1;
+  }
+
   frame->send_buf.can_id = frame->can_id;
   frame->send_buf.can_dlc = 8;
   pthread_mutex_init(&frame->send_buf_mutex, NULL);
@@ -238,6 +243,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
   CAN_VAL_T *val = (CAN_VAL_T *) child;
   double init_value;
   int stale_timeout;
+  int len;
 
   val->frame = (CAN_FRAME_T *) ctx;
 
@@ -271,6 +277,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' bit pos %d exceeds frame data boundary.", val->name, val->pos);
         return -1;
       }
+      len = (val->pos >> 3) + 1;
       break;
     case UVRGW_CONF_CAN_TYPE_U8:
     case UVRGW_CONF_CAN_TYPE_S8:
@@ -278,6 +285,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 1-byte type.", val->name, val->pos);
         return -1;
       }
+      len = val->pos + 1;
       break;
     case UVRGW_CONF_CAN_TYPE_U16:
     case UVRGW_CONF_CAN_TYPE_S16:
@@ -285,6 +293,7 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 2-byte type.", val->name, val->pos);
         return -1;
       }
+      len = val->pos + 2;
       break;
     case UVRGW_CONF_CAN_TYPE_U32:
     case UVRGW_CONF_CAN_TYPE_S32:
@@ -292,10 +301,22 @@ static int value_configure(cfg_t *cfg, void *ctx, void *child) {
         syslog(LOG_ERR, "CAN value '%s' pos %d exceeds frame data boundary for 4-byte type.", val->name, val->pos);
         return -1;
       }
+      len = val->pos + 4;
       break;
     default:
       syslog(LOG_ERR, "CAN value '%s' has invalid type.", val->name);
       return -1;
+  }
+
+  // data bytes used by the values of the frame
+  if (len > val->frame->min_dlc) {
+    val->frame->min_dlc = len;
+  }
+
+  // outputs divide by scale
+  if (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT && val->scale == 0.0) {
+    syslog(LOG_ERR, "CAN value '%s': scale of an output must not be 0.", val->name);
+    return -1;
   }
 
   val->disp = uvrgw_conf_get_dispatcher(val->name, (val->frame->dir == UVRGW_CONF_VAL_DIR_OUT));
@@ -369,7 +390,9 @@ fail0:
  * Called from can_handler() when the interface socket is readable.
  * Reads one standard CAN frame, matches it against all IN-direction
  * frame definitions and dispatches matching values after applying
- * scale and offset.  Extended, RTR and error frames are silently ignored.
+ * scale and offset.  Extended, RTR and error frames are silently ignored;
+ * a frame with less data bytes than its values need is ignored and logged
+ * once.
  *
  * @param fd_set  The read fd_set from select().
  * @param iface   Interface to service.
@@ -404,13 +427,27 @@ static int iface_rx_handler(fd_set *fd_set, CAN_IFACE_T *iface) {
 
   for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
     // check for CAN input mapping
-    if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_IN)) {
+    if (frame->dir != UVRGW_CONF_VAL_DIR_IN) {
       continue;
     }
 
     // check for matching CAN-ID
     if ((rcvd_frame.can_id & CAN_SFF_MASK) != (canid_t) frame->can_id) {
       continue;
+    }
+
+    // a frame not containing all values is ignored
+    if (rcvd_frame.can_dlc < frame->min_dlc) {
+      if (!frame->too_short) {
+        syslog(LOG_WARNING, "CAN frame 0x%x on '%s' has %d data bytes, expected %d; values ignored.",
+          frame->can_id, iface->interface, rcvd_frame.can_dlc, frame->min_dlc);
+        frame->too_short = true;
+      }
+      continue;
+    }
+    if (frame->too_short) {
+      syslog(LOG_INFO, "CAN frame 0x%x on '%s' complete again.", frame->can_id, iface->interface);
+      frame->too_short = false;
     }
 
     for (val = frame->values, val_idx = 0; val_idx < frame->values_count; val++, val_idx++) {
@@ -475,7 +512,7 @@ static void *iface_thread(void *ptr) {
 /**
  * @brief Single TX iteration for one CAN interface.
  *
- * Sends the NTP timestamp frame if the period has elapsed, then checks
+ * Sends the timestamp frame if the period has elapsed, then checks
  * all OUT-direction frames and transmits any whose @c send_time has expired.
  *
  * @param iface  Interface to service.
@@ -485,7 +522,6 @@ static int iface_task(CAN_IFACE_T *iface) {
   int64_t now;
   CAN_FRAME_T *frame;
   int frame_idx;
-  ssize_t count;
 
   now = utl_get_ticks();
 
@@ -499,7 +535,7 @@ static int iface_task(CAN_IFACE_T *iface) {
 
   // check for pending send frames
   for (frame = iface->frames, frame_idx = 0; frame_idx < iface->frames_count; frame++, frame_idx++) {
-    if (!(frame->can_id > 0 && frame->dir == UVRGW_CONF_VAL_DIR_OUT)) {
+    if (frame->dir != UVRGW_CONF_VAL_DIR_OUT) {
       continue;
     }
 
@@ -512,14 +548,41 @@ static int iface_task(CAN_IFACE_T *iface) {
 
     frame->send_time = 0;
 
-    count = write(iface->can_fd, &(frame->send_buf), sizeof(struct can_frame));
-    if (count != sizeof(struct can_frame)) {
+    if (iface_write(iface, &(frame->send_buf)) < 0) {
       pthread_mutex_unlock(&frame->send_buf_mutex);
-      syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
       return -1;
     }
 
     pthread_mutex_unlock(&frame->send_buf_mutex);
+  }
+
+  return 0;
+}
+
+/**
+ * @brief Write a frame to the CAN socket (TX thread only).
+ *
+ * A failure is logged once until a write succeeds again.
+ *
+ * @param iface  Interface.
+ * @param frame  Frame to send.
+ * @return       0 on success, -1 on socket write error.
+ */
+static int iface_write(CAN_IFACE_T *iface, const struct can_frame *frame) {
+  ssize_t count;
+
+  count = write(iface->can_fd, frame, sizeof(struct can_frame));
+  if (count != sizeof(struct can_frame)) {
+    if (!iface->write_failed) {
+      syslog(LOG_ERR, "Failed to write to CAN interface '%s': %s", iface->interface, strerror(errno));
+      iface->write_failed = true;
+    }
+    return -1;
+  }
+
+  if (iface->write_failed) {
+    syslog(LOG_INFO, "CAN interface '%s' written again.", iface->interface);
+    iface->write_failed = false;
   }
 
   return 0;
@@ -565,7 +628,8 @@ static void write_value(uint8_t *p, int len, uint32_t val) {
  *
  * Invoked by the value dispatcher when a value with the same name as an
  * OUT-direction CAN value is received.  Applies the inverse of the
- * scale/offset transform and writes the encoded bytes into the shared
+ * scale/offset transform, rounds to the nearest integer, limits to the
+ * range of the type and writes the encoded bytes into the shared
  * @c send_buf.  Sets @c send_time if not already armed, coalescing
  * multiple updates within the @c send_timeout window.
  *
@@ -579,11 +643,6 @@ static int send_value(void *v, double f, bool valid) {
   CAN_VAL_T *val = (CAN_VAL_T *) v;
   CAN_FRAME_T *frame = val->frame;
   uint8_t *p;
-
-  // check for valid CAN id
-  if (frame->can_id < 0) {
-    return 0;
-  }
 
   now = utl_get_ticks();
 
@@ -602,22 +661,22 @@ static int send_value(void *v, double f, bool valid) {
     p = &frame->send_buf.data[val->pos];
     switch (val->type) {
       case UVRGW_CONF_CAN_TYPE_U8:
-        write_value(p, 1, (uint8_t) utl_val_limit(f, 0.0, UINT8_MAX));
+        write_value(p, 1, (uint8_t) utl_val_limit(round(f), 0.0, UINT8_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S8:
-        write_value(p, 1, (int8_t) utl_val_limit(f, INT8_MIN, INT8_MAX));
+        write_value(p, 1, (int8_t) utl_val_limit(round(f), INT8_MIN, INT8_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_U16:
-        write_value(p, 2, (uint16_t) utl_val_limit(f, 0.0, UINT16_MAX));
+        write_value(p, 2, (uint16_t) utl_val_limit(round(f), 0.0, UINT16_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S16:
-        write_value(p, 2, (int16_t) utl_val_limit(f, INT16_MIN, INT16_MAX));
+        write_value(p, 2, (int16_t) utl_val_limit(round(f), INT16_MIN, INT16_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_U32:
-        write_value(p, 4, (uint32_t) utl_val_limit(f, 0.0, UINT32_MAX));
+        write_value(p, 4, (uint32_t) utl_val_limit(round(f), 0.0, UINT32_MAX));
         break;
       case UVRGW_CONF_CAN_TYPE_S32:
-        write_value(p, 4, (int32_t) utl_val_limit(f, INT32_MIN, INT32_MAX));
+        write_value(p, 4, (int32_t) utl_val_limit(round(f), INT32_MIN, INT32_MAX));
         break;
     }
   }
@@ -631,16 +690,16 @@ static int send_value(void *v, double f, bool valid) {
 }
 
 /**
- * @brief Build and transmit an NTP-synced timestamp CAN frame.
+ * @brief Build and transmit a timestamp CAN frame.
  *
  * The frame uses CAN ID 0x100 with 6 data bytes:
  *   - bytes 0–3: milliseconds since local midnight (little-endian uint32).
  *   - bytes 4–5: days since 1984-01-01 (little-endian uint16).
  *
- * Only sent when ntp_check() confirms the local clock is synchronised.
+ * Only sent while the system clock is synchronised (utl_clock_synced()).
  *
  * @param iface  Interface on which to send the frame.
- * @return       1 on successful transmission, 0 if NTP not synced,
+ * @return       1 on successful transmission, 0 if the clock is not synchronised,
  *               -1 on socket or time error.
  */
 static int send_timestamp(CAN_IFACE_T *iface) {
@@ -649,12 +708,18 @@ static int send_timestamp(CAN_IFACE_T *iface) {
   uint32_t msecs;
   uint16_t days;
   struct can_frame frame;
-  ssize_t count;
 
-  // check for valid NTP time
-  if (!ntp_check()) {
-    syslog(LOG_WARNING, "NTP daemon not synced, will not send timeframe.");
+  // check for valid time
+  if (!utl_clock_synced()) {
+    if (!iface->unsynced) {
+      syslog(LOG_WARNING, "clock not synchronised, CAN timestamps on '%s' are not sent.", iface->interface);
+      iface->unsynced = true;
+    }
     return 0;
+  }
+  if (iface->unsynced) {
+    syslog(LOG_INFO, "clock synchronised, CAN timestamps on '%s' are sent again.", iface->interface);
+    iface->unsynced = false;
   }
 
   // get UTC time
@@ -692,9 +757,7 @@ static int send_timestamp(CAN_IFACE_T *iface) {
   frame.data[5] = (days >> 8) & 0xff;
 
   // send frame
-  count = write(iface->can_fd, &frame, sizeof(struct can_frame));
-  if (count != sizeof(struct can_frame)) {
-    syslog(LOG_ERR, "Failed to write to CAN socket (error = %d)", errno);
+  if (iface_write(iface, &frame) < 0) {
     return -1;
   }
 

@@ -1,0 +1,23 @@
+# libmodbus reads the modem lines with TIOCMGET in modbus_rtu_set_rts()
+# without checking the result and writes them back with TIOCMSET.  The
+# Modbus RTU tests use a pty, which has no modem lines, so TIOCMGET fails
+# and the value written is uninitialised.  Not reachable on a serial port.
+{
+   libmodbus-set-rts-on-pty
+   Memcheck:Param
+   ioctl(TIOCMSET)
+   fun:ioctl
+   ...
+   fun:modbus_rtu_set_rts
+}
+
+# libmosquitto's network thread waits in pselect() with a signal mask.
+# Valgrind replaces the mask by a copy in its own memory ("arena core")
+# and sometimes reports that copy as unaddressable: a valgrind artefact.
+{
+   valgrind-pselect6-sigmask
+   Memcheck:Param
+   pselect6(sig)
+   ...
+   fun:pselect
+}

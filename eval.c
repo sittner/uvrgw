@@ -733,15 +733,19 @@ static UVRGW_CONF_VAL_DISPATCH_T *find_dispatcher(const char *name) {
   return NULL;
 }
 
-void eval_register_disp_cbs(void) {
+int eval_register_disp_cbs(void) {
   EVAL_T *e;
   int idx, trig_idx;
 
   for (e = evals, idx = 0; idx < evals_count; e++, idx++) {
     for (trig_idx = 0; trig_idx < e->triggers_count; trig_idx++) {
-      uvrgw_conf_register_disp_cb(e->triggers[trig_idx], e, trigger_update);
+      if (uvrgw_conf_register_disp_cb(e->triggers[trig_idx], e, trigger_update) < 0) {
+        return -1;
+      }
     }
   }
+
+  return 0;
 }
 
 void eval_unconfigure(void) {
