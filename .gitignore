@@ -1,3 +1,4 @@
 *.o
-uvrgw
+/uvrgw
 __pycache__/
+/br/output/

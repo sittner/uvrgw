@@ -1,0 +1,5 @@
+enable uvrgw.service
+enable dropbear.service
+enable wpa_supplicant@.service wlan0
+disable wpa_supplicant.service
+enable systemd-time-wait-sync.service

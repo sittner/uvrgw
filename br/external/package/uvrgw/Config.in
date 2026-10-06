@@ -1,0 +1,12 @@
+config BR2_PACKAGE_UVRGW
+	bool "uvrgw"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_LIBCONFUSE
+	select BR2_PACKAGE_LIBMODBUS
+	select BR2_PACKAGE_MOSQUITTO
+	select BR2_PACKAGE_LIBCURL
+	select BR2_PACKAGE_JSON_C
+	help
+	  UVR gateway: CAN (TA UVR), Modbus RTU/TCP, MQTT, REST/JSON,
+	  SunSpec meter emulation, persistent counters, calculated
+	  values.

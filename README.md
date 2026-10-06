@@ -16,6 +16,7 @@
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **Stalled data handling** — an input value can fall back to a configured value when its source stops delivering (`stale_timeout`); the logger writes `null` and SunSpec meters report a failure for such values.
 - **Clock synchronisation guard** — CAN timestamp frames are only sent and logger snapshots only taken while the system clock is synchronised (kernel time status, maintained by ntpd, chrony or systemd-timesyncd).
+- **Raspberry Pi image** — Buildroot SD card image for a Pi Zero W with RS485/CAN HAT: read-only root, WiFi, A/B partition layout for updates.
 - Single configuration file, libconfuse-based syntax.
 - Clean shutdown on `SIGINT` / `SIGTERM`.
 
@@ -85,6 +86,38 @@ sudo chmod 640 /etc/uvrgw.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now uvrgw
 ```
+
+---
+
+## Raspberry Pi image
+
+`br/` builds a complete SD card image with Buildroot (submodule `br/buildroot`, LTS) for a Raspberry Pi Zero W with the [Waveshare RS485 CAN HAT](https://www.waveshare.com/wiki/RS485_CAN_HAT): systemd, WiFi, read-only squashfs root, no graphics.  The uvrgw package (`br/external`) is built from the working tree.
+
+```bash
+git submodule update --init
+make -C br                  # -> br/output/images/sdcard.img
+make -C br uvrgw-rebuild all  # after changing uvrgw sources
+```
+
+Any other Buildroot target can be given the same way (`make -C br menuconfig`, `linux-menuconfig`, ...); `O=<dir>` puts the build elsewhere.
+
+**Hardware** (`br/external/board/rpi0w/config.txt`):
+- CAN: MCP2515 on SPI0, interrupt GPIO25, `can0` at 50 kbit/s (`can0.network`).  The `oscillator` of the `mcp2515-can0` overlay must match the crystal on the HAT (8 MHz on boards before 08/2019, 12 MHz on newer ones).
+- RS485: `/dev/ttyAMA0` (PL011 on GPIO14/15, Bluetooth disabled).  Direction (RSE) on GPIO4, set low (receive) at boot.
+- Console: USB serial gadget on the USB OTG port (`ttyGS0`, kernel messages and login as `root` without password); power the board through the PWR port.  SSH (dropbear) with key login for `root`.
+- Hardware watchdog via systemd (`RuntimeWatchdogSec=14`).
+
+**SD card layout** (`genimage.cfg`), prepared for A/B updates with the RPi firmware `autoboot.txt`/`tryboot` mechanism: p1 `autoboot.txt` (selects p2), p2/p3 boot partitions A/B (firmware, kernel, `config.txt`, `cmdline.txt` with `root=` p5/p6), p5/p6 squashfs root A/B, p7 ext4 data on `/data`.  The image fills both slots.
+
+**Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  After flashing, mount p7 and add:
+
+| File | Content |
+|---|---|
+| `uvrgw.conf` | uvrgw configuration (set to `root:uvrgw 0640` at boot) |
+| `wpa_supplicant-wlan0.conf` | WiFi (`ctrl_interface=/run/wpa_supplicant`, `country=DE`, `network={...}`) |
+| `ssh/authorized_keys` | SSH public keys for `root` |
+
+`/data/uvrgw` (counter states) and `/data/dropbear` (SSH host keys) are created at boot.  uvrgw starts after the first NTP sync (`time-sync.target`, `systemd-time-wait-sync`), as the Pi has no RTC.
 
 ---
 
