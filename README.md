@@ -136,12 +136,12 @@ openssl req -x509 -newkey rsa:4096 -nodes -days 36500 \
 
 Only the root slots are updated; p1 (firmware, U-Boot, `config.txt`, DT overlays, `boot.scr`) and `/data` stay as they are.
 
-**Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  After flashing, mount p4 and add:
+**Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  The image comes with the samples from `br/external/board/rpi0w/data/`; after flashing, mount p4 and edit or add:
 
 | File | Content |
 |---|---|
-| `uvrgw.conf` | uvrgw configuration (set to `root:uvrgw 0640` at boot) |
-| `wpa_supplicant-wlan0.conf` | WiFi (`ctrl_interface=/run/wpa_supplicant`, `country=DE`, `network={...}`) |
+| `uvrgw.conf` | uvrgw configuration (set to `root:uvrgw 0640` at boot); the sample is empty, uvrgw starts without any function |
+| `wpa_supplicant-wlan0.conf` | WiFi (`ctrl_interface=/run/wpa_supplicant`, `country=DE`, `network={...}`); the sample has the network commented out |
 | `ssh/authorized_keys` | SSH public keys for `root` |
 
 `/data/uvrgw` (counter states) and `/data/dropbear` (SSH host keys) are created at boot.  uvrgw starts after the first NTP sync (`time-sync.target`, `systemd-time-wait-sync`), as the Pi has no RTC.
