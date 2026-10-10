@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file utils.h
  * @brief Utility functions used throughout uvrgw.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file mqtt.c
  * @brief MQTT client implementation using libmosquitto.

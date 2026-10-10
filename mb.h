@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file mb.h
  * @brief Modbus RTU and TCP master — register polling, read/write and value dispatch.
