@@ -145,6 +145,7 @@ Only the root slots are updated; p1 (firmware, U-Boot, `config.txt`, DT overlays
 |---|---|
 | `uvrgw.conf` | uvrgw configuration (set to `root:uvrgw 0640` at boot); the sample is empty, uvrgw starts without any function |
 | `wpa_supplicant-wlan0.conf` | WiFi (`ctrl_interface=/run/wpa_supplicant`, `country=DE`, `network={...}`); the sample has the network commented out |
+| `wlan0.network` | systemd-networkd config for `wlan0`; the sample uses DHCP and has a fixed address (`Address=`, `Gateway=`, `DNS=`) commented out |
 | `ssh/authorized_keys` | SSH public keys for `root` |
 
 `/data/uvrgw` (counter states) and `/data/dropbear` (SSH host keys) are created at boot.  uvrgw starts after the first NTP sync (`time-sync.target`, `systemd-time-wait-sync`), as the Pi has no RTC.
