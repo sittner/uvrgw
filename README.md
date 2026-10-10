@@ -16,6 +16,7 @@
 - **Central value dispatch** — values are linked across all protocols by *name*.  When a value arrives on any input it is automatically forwarded to every registered output with the same name, enabling CAN→MQTT, Modbus→MQTT, REST→CAN, etc. without any custom glue code.
 - **Stalled data handling** — an input value can fall back to a configured value when its source stops delivering (`stale_timeout`); the logger writes `null` and SunSpec meters report a failure for such values.
 - **Clock synchronisation guard** — CAN timestamp frames are only sent and logger snapshots only taken while the system clock is synchronised (kernel time status, maintained by ntpd, chrony or systemd-timesyncd).
+- **Raspberry Pi image** — Buildroot SD card image for a Pi Zero W with RS485/CAN HAT: read-only root, WiFi, A/B root slots with RAUC updates and U-Boot fallback.
 - Single configuration file, libconfuse-based syntax.
 - Clean shutdown on `SIGINT` / `SIGTERM`.
 
@@ -85,6 +86,69 @@ sudo chmod 640 /etc/uvrgw.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now uvrgw
 ```
+
+---
+
+## Raspberry Pi image
+
+`br/` builds a complete SD card image with Buildroot (submodule `br/buildroot`, LTS) for a Raspberry Pi Zero W with the [Waveshare RS485 CAN HAT](https://www.waveshare.com/wiki/RS485_CAN_HAT): systemd, WiFi, read-only squashfs root, no graphics.  The uvrgw package (`br/external`) is built from the working tree.  The kernel is pinned to the commit of Buildroot's Raspberry Pi defconfigs (`uvrgw_rpi0w_defconfig`), so it matches the firmware and DT overlays of the `rpi-firmware` package; move the pin together with the submodule.
+
+```bash
+git submodule update --init
+make -C br                  # -> br/output/images/sdcard.img
+make -C br uvrgw-rebuild all  # after changing uvrgw sources
+```
+
+Any other Buildroot target can be given the same way (`make -C br menuconfig`, `linux-menuconfig`, ...); `O=<dir>` puts the build elsewhere.
+
+**Hardware** (`br/external/board/rpi0w/config.txt`):
+- CAN: MCP2515 on SPI0, interrupt GPIO25, `can0` at 50 kbit/s (`can0.network`).  The `oscillator` of the `mcp2515-can0` overlay must match the crystal on the HAT (12 MHz; 8 MHz on boards before 08/2019).
+- RS485: `/dev/ttyAMA0` (PL011 on GPIO14/15, Bluetooth disabled).  Direction (RSE) on the UART0 RTS signal (GPIO17, overlay `uart-rts-overlay.dts`), switched by uvrgw (`mode = rs485`, `rts`).
+- Console: USB serial gadget on the USB OTG port (`ttyGS0`, kernel messages and login as `root` without password); power the board through the PWR port.  SSH (dropbear) with key login for `root`.  U-Boot has no console (its UART is the RS485 bus).
+- Hardware watchdog: started by U-Boot, kept by the kernel until systemd takes over (`RuntimeWatchdogSec=14`).
+
+**SD card layout** (`genimage.cfg`):
+
+| Partition | Content |
+|---|---|
+| 0–4 MiB | MBR, U-Boot environment (two copies at 1 MiB and 2 MiB) |
+| p1 `boot` (vfat) | RPi firmware, `config.txt`, DT and overlays, U-Boot, `boot.scr`; not written in operation |
+| p2 / p3 | root slots A / B (squashfs, kernel in `/boot`); the image fills both |
+| p4 `data` (ext4) | `/data`: configuration, credentials, state |
+
+**Slot selection** (`boot.cmd`, the RAUC U-Boot scheme): `BOOT_ORDER` (default `A B`) lists the slots, `BOOT_A_LEFT` / `BOOT_B_LEFT` (default 3) the remaining attempts.  Each boot uses one attempt of the first slot with attempts left and passes `root=` and `rauc.slot=` to the kernel; after three failed boots (panic, watchdog reset, missing kernel) U-Boot boots the other slot.  Once uvrgw is started, `uvrgw-mark-good.service` marks the booted slot good (`rauc status mark-good`, resets its attempts).  The environment is written power-safe (redundant copies); `fw_printenv` / `fw_setenv` access it from Linux.
+
+**Updates** (RAUC, `br/external/board/rpi0w/rootfs-overlay/etc/rauc/system.conf`): the build also creates the signed bundle `br/output/images/uvrgw-rpi0w.raucb` (root filesystem, version from `git describe`).  RAUC writes it to the inactive slot and makes that slot the first in `BOOT_ORDER`; if it does not come up three times, U-Boot boots the old slot again.
+
+RAUC needs a seekable file, so the bundle is copied to `/data` (SD card, saves RAM) and removed after the install:
+
+```bash
+ssh root@uvrgw 'cat > /data/u.raucb && rauc install /data/u.raucb; rm -f /data/u.raucb' \
+  < br/output/images/uvrgw-rpi0w.raucb
+ssh root@uvrgw reboot
+ssh root@uvrgw rauc status --detailed # booted slot, versions, boot status
+```
+
+The signing key and certificate are in `br/keys/` (not in git; the build fails without them).  The certificate is the keyring in the image, so bundles are only accepted from the same key:
+
+```bash
+mkdir -p br/keys
+openssl req -x509 -newkey rsa:4096 -nodes -days 36500 \
+  -keyout br/keys/key.pem -out br/keys/cert.pem -subj "/O=uvrgw/CN=uvrgw update signing"
+```
+
+Only the root slots are updated; p1 (firmware, U-Boot, `config.txt`, DT overlays, `boot.scr`) and `/data` stay as they are.
+
+**Data partition:** configuration, credentials and state live on `/data`, so the image contains no site-specific data.  The image comes with the samples from `br/external/board/rpi0w/data/`; after flashing, mount p4 and edit or add:
+
+| File | Content |
+|---|---|
+| `uvrgw.conf` | uvrgw configuration (set to `root:uvrgw 0640` at boot); the sample is empty, uvrgw starts without any function |
+| `wpa_supplicant-wlan0.conf` | WiFi (`ctrl_interface=/run/wpa_supplicant`, `country=DE`, `network={...}`); the sample has the network commented out |
+| `wlan0.network` | systemd-networkd config for `wlan0`; the sample uses DHCP and has a fixed address (`Address=`, `Gateway=`, `DNS=`) commented out |
+| `ssh/authorized_keys` | SSH public keys for `root` |
+
+`/data/uvrgw` (counter states) and `/data/dropbear` (SSH host keys) are created at boot; the ownership of the files above is set at boot, so they can be copied as any user.  uvrgw starts as soon as `/data` is mounted, without waiting for NTP (the Pi has no RTC): CAN timestamps and logger snapshots are held back by the clock synchronisation guard until systemd-timesyncd has synced.
 
 ---
 

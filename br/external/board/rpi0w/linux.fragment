@@ -1,0 +1,17 @@
+# read-only root filesystem
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZSTD=y
+# serial console on the USB OTG port (ttyGS0), available at boot
+CONFIG_USB_DWC2=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_G_SERIAL=y
+CONFIG_U_SERIAL_CONSOLE=y
+# RAUC verity bundles (loop, dm-verity)
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_VERITY=y
+# modules uncompressed (target kmod has no xz support, squashfs compresses)
+# CONFIG_MODULE_COMPRESS is not set
+# no audit (records would end up on the console); AppArmor selects it
+# CONFIG_SECURITY_APPARMOR is not set
+# CONFIG_AUDIT is not set

@@ -1,0 +1,11 @@
+[Unit]
+Description=Mark the booted slot good (RAUC)
+Requires=uvrgw.service
+After=uvrgw.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rauc status mark-good
+
+[Install]
+WantedBy=multi-user.target

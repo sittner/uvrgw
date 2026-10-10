@@ -1,0 +1,21 @@
+# environment raw in the gap before p1, two copies (power-safe saveenv);
+# same layout in /etc/fw_env.config
+# CONFIG_ENV_IS_IN_FAT is not set
+CONFIG_ENV_IS_IN_MMC=y
+CONFIG_ENV_REDUNDANT=y
+CONFIG_ENV_OFFSET=0x100000
+CONFIG_ENV_OFFSET_REDUND=0x200000
+CONFIG_ENV_SIZE=0x4000
+# kernel from /boot in the squashfs root
+CONFIG_FS_SQUASHFS=y
+CONFIG_ZSTD=y
+# boot without delay and key check (the UART is the RS485 bus)
+CONFIG_BOOTDELAY=-2
+# CONFIG_USE_PREBOOT is not set
+CONFIG_USE_BOOTCOMMAND=y
+CONFIG_BOOTCOMMAND="load mmc 0:1 ${scriptaddr} boot.scr && source ${scriptaddr}"
+# hardware watchdog from U-Boot on, so a hang before systemd resets the
+# board and counts as failed attempt
+CONFIG_WDT=y
+CONFIG_WATCHDOG_AUTOSTART=y
+CONFIG_WATCHDOG_TIMEOUT_MSECS=15000
