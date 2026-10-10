@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Dispatch of resets: outputs, loopback, reset racing with real data."""
 import json
 import re

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Config checks at load time, and stale_timeout inheritance of all inputs.
 
 A SunSpec power source must have a stale_timeout if it is an input, so

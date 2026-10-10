@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file shim.c
  * @brief LD_PRELOAD shim for the test suite.

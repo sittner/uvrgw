@@ -735,6 +735,8 @@ Shutdown is triggered by writing to a Linux `eventfd`, which is monitored by the
 
 ## License
 
-No license is currently specified in this repository.
+Copyright (C) 2022-2026 Sascha Ittner
+
+uvrgw is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version (`SPDX-License-Identifier: GPL-3.0-or-later`).  It is distributed WITHOUT ANY WARRANTY; see `LICENSE` for the full text.
 
 The bundled [tinyexpr](https://github.com/codeplea/tinyexpr) (`tinyexpr/`, used by `eval`, slightly modified as described in `tinyexpr/README.uvrgw`) is licensed under the zlib license, see `tinyexpr/LICENSE`.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file mqtt_logger.c
  * @brief Periodic value snapshots published as JSON via MQTT (for logging).

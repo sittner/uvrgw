@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file rest.h
  * @brief REST/JSON client — HTTP GET with dot-separated JSON path extraction.

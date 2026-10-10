@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file eval.c
  * @brief Calculated values and control logic (eval sections).

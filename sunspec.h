@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file sunspec.h
  * @brief SunSpec smart meter emulation (Modbus TCP server).

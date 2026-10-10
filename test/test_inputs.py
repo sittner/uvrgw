@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Timeouts at runtime for every input type, with device section inheritance.
 
 Each input section sets stale_timeout = 1500 and init_value = -1 and has

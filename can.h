@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file can.h
  * @brief CAN bus interface — SocketCAN RX/TX, value encoding/decoding and

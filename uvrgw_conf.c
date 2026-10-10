@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file uvrgw_conf.c
  * @brief Configuration file parsing and value dispatch implementation.
