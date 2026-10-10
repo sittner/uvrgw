@@ -12,3 +12,6 @@ CONFIG_BLK_DEV_DM=y
 CONFIG_DM_VERITY=y
 # modules uncompressed (target kmod has no xz support, squashfs compresses)
 # CONFIG_MODULE_COMPRESS is not set
+# no audit (records would end up on the console); AppArmor selects it
+# CONFIG_SECURITY_APPARMOR is not set
+# CONFIG_AUDIT is not set
