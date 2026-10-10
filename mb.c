@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file mb.c
  * @brief Modbus master implementation (RTU and TCP).

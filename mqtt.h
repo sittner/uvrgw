@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file mqtt.h
  * @brief MQTT client — publish/subscribe, value formatting and last-will state topic.

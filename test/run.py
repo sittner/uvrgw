@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Run the uvrgw test suite.
 
   test/run.py [--valgrind] [--slow] [-k PATTERN] [--keep] [UVRGW]

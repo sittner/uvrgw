@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Consumers: SunSpec meters, counters, eval (and the logger)."""
 import math
 import os

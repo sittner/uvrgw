@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Helpers for the uvrgw test suite (Python standard library only).
 
 Every test runs uvrgw as a subprocess with a generated config and talks to

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file rest.c
  * @brief REST/JSON client implementation using libcurl and json-c.
