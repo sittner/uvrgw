@@ -91,7 +91,7 @@ sudo systemctl enable --now uvrgw
 
 ## Raspberry Pi image
 
-`br/` builds a complete SD card image with Buildroot (submodule `br/buildroot`, LTS) for a Raspberry Pi Zero W with the [Waveshare RS485 CAN HAT](https://www.waveshare.com/wiki/RS485_CAN_HAT): systemd, WiFi, read-only squashfs root, no graphics.  The uvrgw package (`br/external`) is built from the working tree.
+`br/` builds a complete SD card image with Buildroot (submodule `br/buildroot`, LTS) for a Raspberry Pi Zero W with the [Waveshare RS485 CAN HAT](https://www.waveshare.com/wiki/RS485_CAN_HAT): systemd, WiFi, read-only squashfs root, no graphics.  The uvrgw package (`br/external`) is built from the working tree.  The kernel is pinned to the commit of Buildroot's Raspberry Pi defconfigs (`uvrgw_rpi0w_defconfig`), so it matches the firmware and DT overlays of the `rpi-firmware` package; move the pin together with the submodule.
 
 ```bash
 git submodule update --init
@@ -148,7 +148,7 @@ Only the root slots are updated; p1 (firmware, U-Boot, `config.txt`, DT overlays
 | `wlan0.network` | systemd-networkd config for `wlan0`; the sample uses DHCP and has a fixed address (`Address=`, `Gateway=`, `DNS=`) commented out |
 | `ssh/authorized_keys` | SSH public keys for `root` |
 
-`/data/uvrgw` (counter states) and `/data/dropbear` (SSH host keys) are created at boot.  uvrgw starts after the first NTP sync (`time-sync.target`, `systemd-time-wait-sync`), as the Pi has no RTC.
+`/data/uvrgw` (counter states) and `/data/dropbear` (SSH host keys) are created at boot; the ownership of the files above is set at boot, so they can be copied as any user.  uvrgw starts as soon as `/data` is mounted, without waiting for NTP (the Pi has no RTC): CAN timestamps and logger snapshots are held back by the clock synchronisation guard until systemd-timesyncd has synced.
 
 ---
 
