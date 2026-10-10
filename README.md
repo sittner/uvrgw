@@ -120,10 +120,13 @@ Any other Buildroot target can be given the same way (`make -C br menuconfig`, `
 
 **Updates** (RAUC, `br/external/board/rpi0w/rootfs-overlay/etc/rauc/system.conf`): the build also creates the signed bundle `br/output/images/uvrgw-rpi0w.raucb` (root filesystem, version from `git describe`).  RAUC writes it to the inactive slot and makes that slot the first in `BOOT_ORDER`; if it does not come up three times, U-Boot boots the old slot again.
 
+RAUC needs a seekable file, so the bundle is copied to `/data` (SD card, saves RAM) and removed after the install:
+
 ```bash
-scp br/output/images/uvrgw-rpi0w.raucb root@uvrgw:/tmp/
-ssh root@uvrgw 'rauc install /tmp/uvrgw-rpi0w.raucb && reboot'
-ssh root@uvrgw rauc status            # booted slot, versions, boot status
+ssh root@uvrgw 'cat > /data/u.raucb && rauc install /data/u.raucb; rm -f /data/u.raucb' \
+  < br/output/images/uvrgw-rpi0w.raucb
+ssh root@uvrgw reboot
+ssh root@uvrgw rauc status --detailed # booted slot, versions, boot status
 ```
 
 The signing key and certificate are in `br/keys/` (not in git; the build fails without them).  The certificate is the keyring in the image, so bundles are only accepted from the same key:
