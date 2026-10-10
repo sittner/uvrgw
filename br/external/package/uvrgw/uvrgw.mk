@@ -9,6 +9,8 @@ UVRGW_VERSION = local
 UVRGW_SITE = $(BR2_EXTERNAL_UVRGW_PATH)/../..
 UVRGW_SITE_METHOD = local
 UVRGW_DEPENDENCIES = libconfuse libmodbus mosquitto libcurl json-c
+UVRGW_LICENSE = GPL-3.0+, Zlib (tinyexpr)
+UVRGW_LICENSE_FILES = LICENSE tinyexpr/LICENSE
 
 # no build results of the host, no production config, no image build tree
 UVRGW_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
